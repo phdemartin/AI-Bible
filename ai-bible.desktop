@@ -1,0 +1,14 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=AI Bible
+GenericName=Studio d'Étude Biblique & IA
+Comment=Étude biblique multilingue (SWORD), Grec/Hébreu Strong, Commentaires et IA Gemini
+Exec=/home/philippe/.gemini/antigravity/scratch/Bible_Tool/build/bible_study_studio
+Path=/home/philippe/.gemini/antigravity/scratch/Bible_Tool
+Icon=/home/philippe/.gemini/antigravity/scratch/Bible_Tool/ai_bible_icon.svg
+Terminal=false
+StartupNotify=true
+StartupWMClass=bible_study_studio
+Categories=Education;Utility;Literature;
+Keywords=Bible;SWORD;Grec;Hebreu;Strong;IA;Gemini;Logos;

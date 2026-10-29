@@ -1,0 +1,55 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <defs>
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0F172A"/>
+      <stop offset="55%" stop-color="#1E293B"/>
+      <stop offset="100%" stop-color="#0369A1"/>
+    </linearGradient>
+    <linearGradient id="goldGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#FDE047"/>
+      <stop offset="100%" stop-color="#F59E0B"/>
+    </linearGradient>
+    <linearGradient id="pageGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#F8FAFC"/>
+      <stop offset="100%" stop-color="#E2E8F0"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Fond arrondi -->
+  <rect x="12" y="12" width="232" height="232" rx="52" fill="url(#bgGrad)" stroke="#38BDF8" stroke-width="5"/>
+
+  <!-- Halo lumineux derrière la Bible -->
+  <circle cx="128" cy="118" r="68" fill="#38BDF8" opacity="0.16"/>
+
+  <!-- Bible ouverte (Page gauche & Page droite) -->
+  <path d="M 46 86 C 72 76, 104 80, 128 94 L 128 196 C 104 182, 72 178, 46 188 Z"
+        fill="url(#pageGrad)" stroke="#94A3B8" stroke-width="3" stroke-linejoin="round"/>
+  <path d="M 210 86 C 184 76, 152 80, 128 94 L 128 196 C 152 182, 184 178, 210 188 Z"
+        fill="url(#pageGrad)" stroke="#94A3B8" stroke-width="3" stroke-linejoin="round"/>
+
+  <!-- Couverture inférieure dorée -->
+  <path d="M 40 192 C 70 182, 102 186, 128 202 C 154 186, 186 182, 216 192"
+        fill="none" stroke="url(#goldGrad)" stroke-width="7" stroke-linecap="round"/>
+
+  <!-- Lignes de texte stylisées sur la page gauche -->
+  <line x1="62" y1="112" x2="112" y2="118" stroke="#475569" stroke-width="4" stroke-linecap="round"/>
+  <line x1="62" y1="130" x2="112" y2="136" stroke="#475569" stroke-width="4" stroke-linecap="round"/>
+  <line x1="62" y1="148" x2="112" y2="154" stroke="#475569" stroke-width="4" stroke-linecap="round"/>
+  <line x1="62" y1="166" x2="98" y2="170" stroke="#475569" stroke-width="4" stroke-linecap="round"/>
+
+  <!-- Lignes de texte stylisées sur la page droite -->
+  <line x1="194" y1="112" x2="144" y2="118" stroke="#0284C7" stroke-width="4" stroke-linecap="round"/>
+  <line x1="194" y1="130" x2="144" y2="136" stroke="#0284C7" stroke-width="4" stroke-linecap="round"/>
+  <line x1="194" y1="148" x2="144" y2="154" stroke="#0284C7" stroke-width="4" stroke-linecap="round"/>
+  <line x1="194" y1="166" x2="158" y2="170" stroke="#0284C7" stroke-width="4" stroke-linecap="round"/>
+
+  <!-- Croix lumineuse centrale / Étoile IA -->
+  <path d="M 128 32 L 135 56 L 159 63 L 135 70 L 128 94 L 121 70 L 97 63 L 121 56 Z"
+        fill="url(#goldGrad)" stroke="#FEF08A" stroke-width="2"/>
+  <path d="M 192 38 L 196 50 L 208 54 L 196 58 L 192 70 L 188 58 L 176 54 L 188 50 Z"
+        fill="#38BDF8"/>
+
+  <!-- Badge "AI" en bas -->
+  <rect x="88" y="198" width="80" height="34" rx="12" fill="#0284C7" stroke="#7DD3FC" stroke-width="2.5"/>
+  <text x="128" y="222" font-family="DejaVu Sans, Arial, sans-serif" font-size="20" font-weight="bold" fill="#FFFFFF" text-anchor="middle">AI BIBLE</text>
+</svg>

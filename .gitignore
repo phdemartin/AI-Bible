@@ -1,0 +1,20 @@
+# Build directories
+build/
+build-*/
+cmake-build-*/
+
+# Generated packages
+dist/
+
+# Python virtual environment & local speech models
+.venv/
+__pycache__/
+*.pyc
+models/
+
+# Editor / OS files
+.vscode/
+.idea/
+*.swp
+*~
+.DS_Store
