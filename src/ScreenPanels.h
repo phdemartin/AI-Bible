@@ -70,6 +70,7 @@ signals:
     void addSelectionToPersonalNoteRequested(int verse, const QString& selectedText, bool openNotePane);
     void verseActivated(int verse);
     void verseDropped(const QString& book, int chapter, int verse);
+    void openReferenceInPaneRequested(int targetPaneIndex, const QString& rawRef);
     void fontSizeDeltaRequested(int deltaPt);
     void statusNotification(const QString& msg);
 
@@ -86,6 +87,7 @@ protected:
 
 private:
     bool extractWordInfoAtPos(const QPoint& pos, int& outVerse, QString& outStrong, QString& outMorph, QString& outWord, int& outWordIdx, bool* outIsVerseNum = nullptr) const;
+    bool extractRefLinkAtPos(const QPoint& pos, QString& outRawRef, QString& outDisplayLabel) const;
 
     bool m_isBibleView = false;
     QPoint m_pressPos;
@@ -123,6 +125,7 @@ public:
 
 signals:
     void referenceSelected(const QString& swordBook, int chapter, int verse);
+    void openReferenceInPaneRequested(int targetPaneIndex, const QString& swordKey, const QString& preferredBibleMod);
     void bibleSelectedForColumn(int columnIndex, const QString& bibleMod);
     void commentarySelected(const QString& commMod);
     void dictionarySelected(const QString& dictMod);
@@ -143,6 +146,7 @@ private slots:
     void onDocumentTreeContextMenu(const QPoint& pos);
     void onSearchExecuted();
     void onSearchResultClicked(QListWidgetItem* item);
+    void onSearchResultContextMenu(const QPoint& pos);
     void onOpenGearSettings();
 
 private:
@@ -190,6 +194,7 @@ public:
     ~UniversalPaneWidget() override;
 
     int paneIndex() const { return m_paneIndex; }
+    void setPaneIndex(int index);
 
     // Mode de la fenêtre : "BIBLE", "COMMENTARY", "DICTIONARY", "AI", "NOTES"
     QString paneMode() const { return m_paneMode; }
@@ -270,11 +275,14 @@ signals:
     void openPersonalNoteForVerseRequested(int sourcePaneIndex, const QString& swordKey);
     void personalNoteModified(const QString& swordKey);
     void navigateToReferenceRequested(int paneIndex, const QString& swordKey);
+    void navigateToReferenceInPaneRequested(int sourcePaneIndex, int targetPaneIndex, const QString& swordKey);
     void requestStudyContext(QString& outContext, QStringList& outActiveBibles);
     void apiKeyUpdated(const QString& newKey, const QString& modelName);
     void styleChanged();
     void applyStyleToAllRequested(const PaneStyle& style);
     void statusNotification(const QString& msg);
+    void splitPaneRequested(UniversalPaneWidget* sourcePane, int orientation, const QString& initialMode);
+    void closePaneRequested(UniversalPaneWidget* targetPane);
 
 protected:
     bool eventFilter(QObject* watched, QEvent* event) override;
@@ -292,6 +300,7 @@ private slots:
     void onOpenGearSettings();
 
 private:
+    void showSplitMenu(int orientation, QWidget* anchorBtn);
     void handleVerseDroppedInAi(const QString& book, int chapter, int verse, const QString& sourceModule = QString());
     void copyTurnToWordProcessorClipboard(int turnIndex);
     void stopMicDictation();
@@ -299,6 +308,8 @@ private:
     void updateLinkButtonUi();
     void updateAiModeSwitchUi();
     void updateAiLanguageButtonsUi();
+    void populateAiLanguageCombo();
+    QString effectiveAiLanguageCode() const;
     void populateNotesCombo();
     void scrollBibleToActiveVerse();
     void renderGeminiConversation();
@@ -314,7 +325,7 @@ private:
     QString m_commMod = "ALL_FR";
     QString m_dictMod = "AUTO_STRONG";
     bool m_aiChatMode = true;
-    QString m_aiResponseLang = "fr"; // "fr" (🇫🇷), "es" (🇪🇸), "fr_es" (🇫🇷+🇪🇸), "en" (🇬🇧)
+    QString m_aiResponseLang = "auto"; // "auto" (suit la langue de la Bible active / de l'OS), ou code ISO ("fr", "es", "en", "de", "pt"...)
     bool m_linked = true;
 
     QString m_book = "John";
@@ -333,9 +344,13 @@ private:
     QString m_lastSourcesQuery;
     bool m_sourcesCleared = false;
 
-    // Ligne 1 : Sélecteur du type de fenêtre + contrôles du mode + roue dentée ⚙
+    // Ligne 1 : Sélecteur du type de fenêtre + contrôles du mode + boutons d'ajout/suppression de fenêtre (➕⬇, ➕➡, ✕) + roue dentée ⚙
     QComboBox* m_typeCombo = nullptr;
     QStackedWidget* m_headerModeStack = nullptr;
+    QToolButton* m_splitDownBtn = nullptr;
+    QToolButton* m_splitRightBtn = nullptr;
+    QToolButton* m_closePaneBtn = nullptr;
+    QToolButton* m_gearBtn = nullptr;
 
     // Header Page 0 : Bible
     QComboBox* m_bibleCombo = nullptr;

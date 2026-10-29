@@ -1,4 +1,5 @@
 #include "GeminiClient.h"
+#include "SwordEngine.h"
 
 #include <QNetworkRequest>
 #include <QNetworkReply>
@@ -61,19 +62,15 @@ void GeminiClient::setModel(const QString& modelName) {
 
 void GeminiClient::setResponseLanguage(const QString& langCode) {
     QString c = langCode.trimmed().toLower();
-    if (c == "es" || c == "fr_es" || c == "en" || c == "fr") {
+    if (!c.isEmpty() && c != "auto") {
         m_responseLang = c;
-    } else {
-        m_responseLang = "fr";
+    } else if (m_responseLang.isEmpty()) {
+        m_responseLang = SwordEngine::detectSystemLanguageCode();
     }
 }
 
 QString GeminiClient::languageDisplayName(const QString& langCode) {
-    QString c = langCode.trimmed().toLower();
-    if (c == "es") return "🇪🇸 Español";
-    if (c == "fr_es") return "🇫🇷+🇪🇸 Bilingue (Français & Español)";
-    if (c == "en") return "🇬🇧 English";
-    return "🇫🇷 Français";
+    return SwordEngine::languageFlagAndName(langCode);
 }
 
 QString GeminiClient::buildSystemInstruction() const {
@@ -99,8 +96,18 @@ QString GeminiClient::buildSystemInstruction() const {
             "IMPORTANT: Regardless of the language of the prompt or context, ALWAYS RESPOND ENTIRELY IN CLEAR, STRUCTURED ENGLISH, "
             "citing original Greek/Hebrew words (with Strong's numbers) and English Bible translations (KJV, ESV, NASB)."
         );
+    } else if (m_responseLang == "fr") {
+        return QString::fromUtf8(kSystemPrompt);
     }
-    return QString::fromUtf8(kSystemPrompt);
+
+    QString langName = SwordEngine::languageNativeName(m_responseLang);
+    return QString(
+        "You are an expert assistant in biblical exegesis, theology, homiletics, ancient history, and biblical languages "
+        "(Masoretic Hebrew, Aramaic, Koine Greek). "
+        "IMPORTANT: Regardless of the language of the user prompt or study context, ALWAYS RESPOND ENTIRELY IN %1 (ISO code: %2), "
+        "using clear, structured, pastoral, and scholarly prose ready to be pasted into a word processor, citing original Greek/Hebrew words (with Strong's numbers) "
+        "and Bible book names in %1."
+    ).arg(langName, m_responseLang);
 }
 
 QString GeminiClient::buildLanguageDirective() const {
@@ -116,10 +123,16 @@ QString GeminiClient::buildLanguageDirective() const {
         return QStringLiteral(
             "\n\n[MANDATORY LANGUAGE INSTRUCTION: Respond ENTIRELY in ENGLISH, clearly formatted and ready to paste into a word processor.]"
         );
+    } else if (m_responseLang == "fr") {
+        return QStringLiteral(
+            "\n\n[INSTRUCTION DE LANGUE OBLIGATOIRE : Réponds INTÉGRALEMENT en FRANÇAIS, bien structuré et prêt à être collé dans un traitement de texte.]"
+        );
     }
-    return QStringLiteral(
-        "\n\n[INSTRUCTION DE LANGUE OBLIGATOIRE : Réponds INTÉGRALEMENT en FRANÇAIS, bien structuré et prêt à être collé dans un traitement de texte.]"
-    );
+
+    QString langName = SwordEngine::languageNativeName(m_responseLang);
+    return QString(
+        "\n\n[MANDATORY LANGUAGE INSTRUCTION: Respond ENTIRELY in %1 (%2), clearly structured and ready to paste into a word processor.]"
+    ).arg(langName, m_responseLang);
 }
 
 void GeminiClient::clearHistory() {

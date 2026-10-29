@@ -98,6 +98,10 @@ MainWindow::MainWindow(QWidget* parent)
     connect(m_leftScreen, &LeftScreenWidget::referenceSelected, this, [this](const QString& book, int ch, int v) {
         navigateTo(book, ch, v, true);
     });
+    connect(m_leftScreen, &LeftScreenWidget::openReferenceInPaneRequested, this,
+            [this](int targetPaneIdx, const QString& swordKey, const QString& bibleMod) {
+        openReferenceInSpecificPane(targetPaneIdx, swordKey, bibleMod, 0);
+    });
     connect(m_leftScreen, &LeftScreenWidget::openDocumentInPaneRequested, this, [this](int idx, const QString& kind, const QString& modName) {
         int targetIdx = isPaneActiveInLayout(idx) ? idx : pickFallbackActivePane(-1, idx);
         UniversalPaneWidget* p = paneAt(targetIdx);
@@ -127,7 +131,7 @@ MainWindow::MainWindow(QWidget* parent)
         navigateTo(b, c, v, true);
 
         UniversalPaneWidget* target = nullptr;
-        for (int i = 0; i < 4; ++i) {
+        for (int i = 0; i < paneCount(); ++i) {
             if (isPaneActiveInLayout(i) && paneAt(i) && paneAt(i)->paneMode() == "NOTES") {
                 target = paneAt(i);
                 break;
@@ -148,7 +152,7 @@ MainWindow::MainWindow(QWidget* parent)
         saveSettings();
     });
     connect(m_leftScreen, &LeftScreenWidget::bibleSelectedForColumn, this, [this](int colIndex, const QString& bibleMod) {
-        int targetIdx = isPaneActiveInLayout(colIndex) ? colIndex : 0;
+        int targetIdx = isPaneActiveInLayout(colIndex) ? colIndex : pickFallbackActivePane(-1, colIndex);
         UniversalPaneWidget* p = paneAt(targetIdx);
         if (!p) p = paneAt(0);
         if (p) p->setBibleModule(bibleMod, true);
@@ -157,7 +161,7 @@ MainWindow::MainWindow(QWidget* parent)
     });
     connect(m_leftScreen, &LeftScreenWidget::commentarySelected, this, [this](const QString& commMod) {
         UniversalPaneWidget* target = nullptr;
-        for (int i = 0; i < 4; ++i) {
+        for (int i = 0; i < paneCount(); ++i) {
             if (isPaneActiveInLayout(i) && paneAt(i) && paneAt(i)->paneMode() == "COMMENTARY") {
                 target = paneAt(i);
                 break;
@@ -170,7 +174,7 @@ MainWindow::MainWindow(QWidget* parent)
     });
     connect(m_leftScreen, &LeftScreenWidget::dictionarySelected, this, [this](const QString& dictMod) {
         UniversalPaneWidget* target = nullptr;
-        for (int i = 0; i < 4; ++i) {
+        for (int i = 0; i < paneCount(); ++i) {
             if (isPaneActiveInLayout(i) && paneAt(i) && paneAt(i)->paneMode() == "DICTIONARY") {
                 target = paneAt(i);
                 break;
@@ -196,7 +200,7 @@ MainWindow::MainWindow(QWidget* parent)
             QString b = paneAt(0)->book();
             int ch = paneAt(0)->chapter();
             int v = paneAt(0)->verse();
-            for (int i = 1; i < 4; ++i) {
+            for (int i = 1; i < paneCount(); ++i) {
                 if (paneAt(i) && paneAt(i)->isLinked()) {
                     paneAt(i)->loadPassage(b, ch, v, true, false);
                 }
@@ -217,268 +221,10 @@ MainWindow::MainWindow(QWidget* parent)
         statusBar()->showMessage(msg, 6000);
     });
 
-    // Connexions universelles pour les 4 Fenêtres Interchangeables (Fenêtres 1, 2, 3, 4)
+    // Connexions universelles pour les 4 Fenêtres de base (et toute fenêtre dynamique ajoutée via ➕⬇ / ➕➡)
     for (int i = 0; i < 4; ++i) {
         UniversalPaneWidget* p = paneAt(i);
-        if (!p) continue;
-
-        connect(p, &UniversalPaneWidget::paneConfigChanged, this, [this](int) {
-            if (m_isLoadingSettings) return;
-            syncLeftTreeBibles();
-            saveSettings();
-        });
-
-        connect(p, &UniversalPaneWidget::passageChanged, this, [this](int sourceIdx, const QString& book, int ch, int v) {
-            if (m_isLoadingSettings) return;
-            m_currentBook = book;
-            m_currentChapter = ch;
-            m_currentVerse = v;
-            m_leftScreen->syncCurrentReference(book, ch, v);
-
-            UniversalPaneWidget* src = paneAt(sourceIdx);
-            if (src && src->isLinked()) {
-                for (int j = 0; j < 4; ++j) {
-                    if (j == sourceIdx) continue;
-                    UniversalPaneWidget* other = paneAt(j);
-                    if (other && other->isLinked()) {
-                        other->loadPassage(book, ch, v, true, false);
-                    }
-                }
-            }
-            saveSettings();
-        });
-
-        connect(p, &UniversalPaneWidget::bibleScrolled, this, [this](int sourceIdx, double ratio, int topVisibleVerse) {
-            if (m_isLoadingSettings) return;
-            UniversalPaneWidget* src = paneAt(sourceIdx);
-            if (!src || !src->isLinked()) return;
-
-            for (int j = 0; j < 4; ++j) {
-                if (j == sourceIdx) continue;
-                UniversalPaneWidget* other = paneAt(j);
-                if (!other || !other->isLinked()) continue;
-                if (other->book() != src->book() || other->chapter() != src->chapter()) continue;
-
-                if (other->paneMode() == "BIBLE") {
-                    other->setScrollRatio(ratio);
-                } else if (other->paneMode() == "COMMENTARY" || other->paneMode() == "NOTES") {
-                    other->updateCommentaryVerseOnly(topVisibleVerse);
-                }
-            }
-        });
-
-        connect(p, &UniversalPaneWidget::wordClickedInBible, this,
-                [this](int sourceIdx, const QString& swordKey, const QString& strongCode, const QString& morphCode, const QString& word, int wordIndex) {
-            QString b; int c = 1, v = 1;
-            m_engine->splitSwordKey(swordKey, b, c, v);
-
-            WordToken tok = m_engine->resolveClickedWordToToken(swordKey, word, strongCode, morphCode, wordIndex);
-            QString resolvedStrong = !tok.strongCode.isEmpty() ? tok.strongCode : strongCode.trimmed();
-
-            // Surligner le mot dans toutes les fenêtres Bible ouvertes sur ce chapitre
-            for (int j = 0; j < 4; ++j) {
-                UniversalPaneWidget* bp = paneAt(j);
-                if (!bp || bp->paneMode() != "BIBLE") continue;
-                if (j == sourceIdx) {
-                    bp->highlightWordInBible(v, resolvedStrong, word, wordIndex, true);
-                } else if (bp->book() == b && bp->chapter() == c) {
-                    bp->highlightWordInBible(v, resolvedStrong, word, -1, false);
-                }
-            }
-
-            // Afficher la définition Grecque / Hébraïque dans toute fenêtre active en mode Dictionnaire
-            bool shownInDict = false;
-            for (int j = 0; j < 4; ++j) {
-                UniversalPaneWidget* dp = paneAt(j);
-                if (isPaneActiveInLayout(j) && dp && dp->paneMode() == "DICTIONARY") {
-                    dp->showWordDefinition(swordKey, strongCode, morphCode, word, wordIndex);
-                    shownInDict = true;
-                }
-            }
-
-            // Si aucune fenêtre active n'est en mode Dictionnaire, basculer une fenêtre active en Dictionnaire
-            if (!shownInDict) {
-                int targetIdx = pickFallbackActivePane(sourceIdx, 2);
-                UniversalPaneWidget* dp = paneAt(targetIdx);
-                if (dp) {
-                    dp->setPaneMode("DICTIONARY", false);
-                    dp->showWordDefinition(swordKey, strongCode, morphCode, word, wordIndex);
-                    statusBar()->showMessage(
-                        QString("🏛️ Fenêtre %1 basculée sur Dictionnaire Grec/Hébreu pour « %2 ».").arg(targetIdx + 1).arg(word),
-                        5000
-                    );
-                }
-            }
-        });
-
-        connect(p, &UniversalPaneWidget::aiResearchRequested, this,
-                [this](int sourceIdx, const QString& swordKey, const QString& sourceLabel, const QString& selectedText, bool autoSend) {
-            QStringList activeBibles = collectActiveBibles();
-            bool sentToAi = false;
-            for (int j = 0; j < 4; ++j) {
-                UniversalPaneWidget* ap = paneAt(j);
-                if (isPaneActiveInLayout(j) && ap && ap->paneMode() == "AI") {
-                    ap->preparePassageForAiQuestion(swordKey, sourceLabel, selectedText, activeBibles, autoSend);
-                    sentToAi = true;
-                }
-            }
-
-            if (!sentToAi) {
-                int targetIdx = pickFallbackActivePane(sourceIdx, 3);
-                UniversalPaneWidget* ap = paneAt(targetIdx);
-                if (ap) {
-                    ap->setPaneMode("AI", false);
-                    ap->preparePassageForAiQuestion(swordKey, sourceLabel, selectedText, activeBibles, autoSend);
-                }
-            }
-
-            statusBar()->showMessage(
-                QString("🤖 Sélection (%1 — %2) prête dans la fenêtre IA — écrivez ou dictez (🎤) votre question.")
-                    .arg(m_engine->toFrenchReference(swordKey), sourceLabel),
-                6000
-            );
-        });
-
-        connect(p, &UniversalPaneWidget::addExcerptToPersonalNoteRequested, this,
-                [this](int sourceIdx, const QString& swordKey, const QString& sourceTitle, const QString& excerptText, const QString& preferredBibleMod, bool openNotePane) {
-            QString b; int c = 1, v = 1;
-            m_engine->splitSwordKey(swordKey, b, c, v);
-
-            m_engine->appendExcerptToPersonalNote(swordKey, sourceTitle, excerptText, preferredBibleMod);
-            PersonalNote note = m_engine->getPersonalNote(swordKey);
-
-            if (m_leftScreen) {
-                m_leftScreen->refreshPersonalNotesTree();
-            }
-
-            // Mettre à jour le badge 📝 sur les versets des fenêtres Bible ouvertes sur ce chapitre
-            for (int j = 0; j < 4; ++j) {
-                UniversalPaneWidget* bp = paneAt(j);
-                if (bp && bp->paneMode() == "BIBLE" && bp->book() == b && bp->chapter() == c) {
-                    bp->refreshContent(false);
-                }
-            }
-
-            // Mettre à jour toute fenêtre active déjà en mode NOTES
-            bool shownInNotesPane = false;
-            for (int j = 0; j < 4; ++j) {
-                UniversalPaneWidget* np = paneAt(j);
-                if (isPaneActiveInLayout(j) && np && np->paneMode() == "NOTES") {
-                    np->loadPassage(b, c, v, false, false);
-                    np->refreshPersonalNoteView(true);
-                    shownInNotesPane = true;
-                }
-            }
-
-            // Si l'utilisateur a demandé d'ouvrir la fiche et qu'aucune fenêtre active n'est en mode NOTES
-            if (openNotePane && !shownInNotesPane) {
-                int targetIdx = pickFallbackActivePane(sourceIdx, 2);
-                UniversalPaneWidget* np = paneAt(targetIdx);
-                if (np) {
-                    np->loadPassage(b, c, v, false, false);
-                    np->setPaneMode("NOTES", false);
-                    np->refreshPersonalNoteView(true);
-                }
-                saveSettings();
-            }
-
-            statusBar()->showMessage(
-                QString("📝 Extrait #%1 (%2) ajouté à la note personnelle de %3 !")
-                    .arg(note.excerptCount)
-                    .arg(sourceTitle)
-                    .arg(note.frenchRef),
-                6000
-            );
-        });
-
-        connect(p, &UniversalPaneWidget::openPersonalNoteForVerseRequested, this,
-                [this](int sourceIdx, const QString& swordKey) {
-            QString b; int c = 1, v = 1;
-            m_engine->splitSwordKey(swordKey, b, c, v);
-
-            UniversalPaneWidget* target = nullptr;
-            for (int j = 0; j < 4; ++j) {
-                if (isPaneActiveInLayout(j) && paneAt(j) && paneAt(j)->paneMode() == "NOTES") {
-                    target = paneAt(j);
-                    break;
-                }
-            }
-            if (!target) {
-                int targetIdx = pickFallbackActivePane(sourceIdx, 2);
-                target = paneAt(targetIdx);
-                if (target) {
-                    target->setPaneMode("NOTES", false);
-                }
-            }
-            if (target) {
-                target->loadPassage(b, c, v, false, false);
-                target->refreshPersonalNoteView(false);
-            }
-            statusBar()->showMessage(
-                QString("📝 Fiche d'étude personnelle ouverte pour %1.").arg(m_engine->toFrenchReference(swordKey)),
-                6000
-            );
-            saveSettings();
-        });
-
-        connect(p, &UniversalPaneWidget::personalNoteModified, this,
-                [this, i](const QString& swordKey) {
-            QString b; int c = 1, v = 1;
-            m_engine->splitSwordKey(swordKey, b, c, v);
-
-            if (m_leftScreen) {
-                m_leftScreen->refreshPersonalNotesTree();
-            }
-
-            for (int j = 0; j < 4; ++j) {
-                if (j == i) continue;
-                UniversalPaneWidget* other = paneAt(j);
-                if (!other) continue;
-                if (other->paneMode() == "BIBLE" && other->book() == b && other->chapter() == c) {
-                    other->refreshContent(false);
-                } else if (other->paneMode() == "NOTES" && other->swordKey() == swordKey) {
-                    other->refreshPersonalNoteView(false);
-                }
-            }
-        });
-
-        connect(p, &UniversalPaneWidget::navigateToReferenceRequested, this, [this](int, const QString& swordKey) {
-            QString b; int c = 1, v = 1;
-            m_engine->splitSwordKey(swordKey, b, c, v);
-            navigateTo(b, c, v, true);
-        });
-
-        connect(p, &UniversalPaneWidget::requestStudyContext, this, [this](QString& outCtx, QStringList& outActiveBibles) {
-            outActiveBibles = collectActiveBibles();
-            QString key = QString("%1 %2:%3").arg(m_currentBook).arg(m_currentChapter).arg(m_currentVerse);
-            outCtx = m_engine->buildGeminiStudyContext(
-                key,
-                outActiveBibles,
-                collectCurrentStrongCode(),
-                QString(),
-                collectCurrentCommentaryModule()
-            );
-        });
-
-        connect(p, &UniversalPaneWidget::apiKeyUpdated, this, [this](const QString&, const QString&) {
-            for (int j = 0; j < 4; ++j) {
-                if (paneAt(j)) paneAt(j)->notifyGeminiUpdated();
-            }
-            saveSettings();
-        });
-
-        connect(p, &UniversalPaneWidget::styleChanged, this, [this, i]() {
-            if (i == 0 && paneAt(0)) {
-                applyStylePalette(paneAt(0)->paneStyle());
-            }
-            saveSettings();
-        });
-
-        connect(p, &UniversalPaneWidget::applyStyleToAllRequested, this, &MainWindow::applyStyleToAllModules);
-
-        connect(p, &UniversalPaneWidget::statusNotification, this, [this](const QString& msg) {
-            statusBar()->showMessage(msg, 6000);
-        });
+        if (p) connectPaneSignals(p);
     }
 
     loadSettings();
@@ -500,38 +246,495 @@ MainWindow::MainWindow(QWidget* parent)
         });
     }
 
-    statusBar()->showMessage("Prêt — Cliquez sur « 📐 Mise en page » en haut pour choisir 1 ou 2 écrans et le nombre de colonnes (2, 3, 4 ou Mixte).");
+    statusBar()->showMessage("Prêt — Utilisez les boutons ➕⬇, ➕➡ et ✕ en haut à droite de chaque fenêtre pour ajouter ou fermer des fenêtres à volonté.");
 }
 
 MainWindow::~MainWindow() = default;
+
+int MainWindow::paneCount() const {
+    return 4 + m_dynamicSplits.size();
+}
 
 UniversalPaneWidget* MainWindow::paneAt(int index) const {
     if (index == 0 && m_centerScreen) return m_centerScreen->pane(0);
     if (index == 1 && m_centerScreen) return m_centerScreen->pane(1);
     if (index == 2 && m_rightScreen) return m_rightScreen->pane(0);
     if (index == 3 && m_rightScreen) return m_rightScreen->pane(1);
+    int dynIdx = index - 4;
+    if (dynIdx >= 0 && dynIdx < m_dynamicSplits.size()) {
+        return m_dynamicSplits[dynIdx].createdPane;
+    }
     return nullptr;
 }
 
 bool MainWindow::isPaneActiveInLayout(int index) const {
-    const QString& preset = m_layoutConfig.presetId;
-    if (index == 0) return true;
-    if (index == 1) return (preset != "3_MIXED");
-    if (index == 2) return (preset != "2_COLS");
-    if (index == 3) return (preset == "3_MIXED" || preset == "4_MIXED" || preset == "4_COLS");
-    return false;
+    UniversalPaneWidget* p = paneAt(index);
+    if (!p || p->isHidden()) return false;
+    if (m_centerScreen && m_centerScreen->isAncestorOf(p) && m_centerScreen->isHidden()) return false;
+    if (m_rightScreen && m_rightScreen->isAncestorOf(p) && m_rightScreen->isHidden()) return false;
+    return true;
 }
 
 int MainWindow::pickFallbackActivePane(int excludeIndex, int preferredIndex) const {
-    if (preferredIndex >= 0 && preferredIndex < 4 && preferredIndex != excludeIndex && isPaneActiveInLayout(preferredIndex)) {
+    if (preferredIndex >= 0 && preferredIndex < paneCount() && preferredIndex != excludeIndex && isPaneActiveInLayout(preferredIndex)) {
         return preferredIndex;
     }
-    for (int j = 3; j >= 0; --j) {
+    for (int j = paneCount() - 1; j >= 0; --j) {
         if (j != excludeIndex && isPaneActiveInLayout(j)) {
             return j;
         }
     }
     return 0;
+}
+
+void MainWindow::connectPaneSignals(UniversalPaneWidget* p) {
+    if (!p) return;
+
+    connect(p, &UniversalPaneWidget::paneConfigChanged, this, [this](int) {
+        if (m_isLoadingSettings) return;
+        syncLeftTreeBibles();
+        saveSettings();
+    });
+
+    connect(p, &UniversalPaneWidget::passageChanged, this, [this](int sourceIdx, const QString& book, int ch, int v) {
+        if (m_isLoadingSettings) return;
+        m_currentBook = book;
+        m_currentChapter = ch;
+        m_currentVerse = v;
+        m_leftScreen->syncCurrentReference(book, ch, v);
+
+        UniversalPaneWidget* src = paneAt(sourceIdx);
+        if (src && src->isLinked()) {
+            for (int j = 0; j < paneCount(); ++j) {
+                if (j == sourceIdx) continue;
+                UniversalPaneWidget* other = paneAt(j);
+                if (other && other->isLinked()) {
+                    other->loadPassage(book, ch, v, true, false);
+                }
+            }
+        }
+        saveSettings();
+    });
+
+    connect(p, &UniversalPaneWidget::bibleScrolled, this, [this](int sourceIdx, double ratio, int topVisibleVerse) {
+        if (m_isLoadingSettings) return;
+        UniversalPaneWidget* src = paneAt(sourceIdx);
+        if (!src || !src->isLinked()) return;
+
+        for (int j = 0; j < paneCount(); ++j) {
+            if (j == sourceIdx) continue;
+            UniversalPaneWidget* other = paneAt(j);
+            if (!other || !other->isLinked()) continue;
+            if (other->book() != src->book() || other->chapter() != src->chapter()) continue;
+
+            if (other->paneMode() == "BIBLE") {
+                other->setScrollRatio(ratio);
+            } else if (other->paneMode() == "COMMENTARY" || other->paneMode() == "NOTES") {
+                other->updateCommentaryVerseOnly(topVisibleVerse);
+            }
+        }
+    });
+
+    connect(p, &UniversalPaneWidget::wordClickedInBible, this,
+            [this](int sourceIdx, const QString& swordKey, const QString& strongCode, const QString& morphCode, const QString& word, int wordIndex) {
+        QString b; int c = 1, v = 1;
+        m_engine->splitSwordKey(swordKey, b, c, v);
+
+        WordToken tok = m_engine->resolveClickedWordToToken(swordKey, word, strongCode, morphCode, wordIndex);
+        QString resolvedStrong = !tok.strongCode.isEmpty() ? tok.strongCode : strongCode.trimmed();
+
+        // Surligner le mot dans toutes les fenêtres Bible ouvertes sur ce chapitre
+        for (int j = 0; j < paneCount(); ++j) {
+            UniversalPaneWidget* bp = paneAt(j);
+            if (!bp || bp->paneMode() != "BIBLE") continue;
+            if (j == sourceIdx) {
+                bp->highlightWordInBible(v, resolvedStrong, word, wordIndex, true);
+            } else if (bp->book() == b && bp->chapter() == c) {
+                bp->highlightWordInBible(v, resolvedStrong, word, -1, false);
+            }
+        }
+
+        // Afficher la définition Grecque / Hébraïque dans toute fenêtre active en mode Dictionnaire
+        bool shownInDict = false;
+        for (int j = 0; j < paneCount(); ++j) {
+            UniversalPaneWidget* dp = paneAt(j);
+            if (isPaneActiveInLayout(j) && dp && dp->paneMode() == "DICTIONARY") {
+                dp->showWordDefinition(swordKey, strongCode, morphCode, word, wordIndex);
+                shownInDict = true;
+            }
+        }
+
+        // Si aucune fenêtre active n'est en mode Dictionnaire, basculer une fenêtre active en Dictionnaire
+        if (!shownInDict) {
+            int targetIdx = pickFallbackActivePane(sourceIdx, 2);
+            UniversalPaneWidget* dp = paneAt(targetIdx);
+            if (dp) {
+                dp->setPaneMode("DICTIONARY", false);
+                dp->showWordDefinition(swordKey, strongCode, morphCode, word, wordIndex);
+                statusBar()->showMessage(
+                    QString("🏛️ Fenêtre %1 basculée sur Dictionnaire Grec/Hébreu pour « %2 ».").arg(targetIdx + 1).arg(word),
+                    5000
+                );
+            }
+        }
+    });
+
+    connect(p, &UniversalPaneWidget::aiResearchRequested, this,
+            [this](int sourceIdx, const QString& swordKey, const QString& sourceLabel, const QString& selectedText, bool autoSend) {
+        QStringList activeBibles = collectActiveBibles();
+        bool sentToAi = false;
+        for (int j = 0; j < paneCount(); ++j) {
+            UniversalPaneWidget* ap = paneAt(j);
+            if (isPaneActiveInLayout(j) && ap && ap->paneMode() == "AI") {
+                ap->preparePassageForAiQuestion(swordKey, sourceLabel, selectedText, activeBibles, autoSend);
+                sentToAi = true;
+            }
+        }
+
+        if (!sentToAi) {
+            int targetIdx = pickFallbackActivePane(sourceIdx, 3);
+            UniversalPaneWidget* ap = paneAt(targetIdx);
+            if (ap) {
+                ap->setPaneMode("AI", false);
+                ap->preparePassageForAiQuestion(swordKey, sourceLabel, selectedText, activeBibles, autoSend);
+            }
+        }
+
+        statusBar()->showMessage(
+            QString("🤖 Sélection (%1 — %2) prête dans la fenêtre IA — écrivez ou dictez (🎤) votre question.")
+                .arg(m_engine->toFrenchReference(swordKey), sourceLabel),
+            6000
+        );
+    });
+
+    connect(p, &UniversalPaneWidget::addExcerptToPersonalNoteRequested, this,
+            [this](int sourceIdx, const QString& swordKey, const QString& sourceTitle, const QString& excerptText, const QString& preferredBibleMod, bool openNotePane) {
+        QString b; int c = 1, v = 1;
+        m_engine->splitSwordKey(swordKey, b, c, v);
+
+        m_engine->appendExcerptToPersonalNote(swordKey, sourceTitle, excerptText, preferredBibleMod);
+        PersonalNote note = m_engine->getPersonalNote(swordKey);
+
+        if (m_leftScreen) {
+            m_leftScreen->refreshPersonalNotesTree();
+        }
+
+        // Mettre à jour le badge 📝 sur les versets des fenêtres Bible ouvertes sur ce chapitre
+        for (int j = 0; j < paneCount(); ++j) {
+            UniversalPaneWidget* bp = paneAt(j);
+            if (bp && bp->paneMode() == "BIBLE" && bp->book() == b && bp->chapter() == c) {
+                bp->refreshContent(false);
+            }
+        }
+
+        // Mettre à jour toute fenêtre active déjà en mode NOTES
+        bool shownInNotesPane = false;
+        for (int j = 0; j < paneCount(); ++j) {
+            UniversalPaneWidget* np = paneAt(j);
+            if (isPaneActiveInLayout(j) && np && np->paneMode() == "NOTES") {
+                np->loadPassage(b, c, v, false, false);
+                np->refreshPersonalNoteView(true);
+                shownInNotesPane = true;
+            }
+        }
+
+        // Si l'utilisateur a demandé d'ouvrir la fiche et qu'aucune fenêtre active n'est en mode NOTES
+        if (openNotePane && !shownInNotesPane) {
+            int targetIdx = pickFallbackActivePane(sourceIdx, 2);
+            UniversalPaneWidget* np = paneAt(targetIdx);
+            if (np) {
+                np->loadPassage(b, c, v, false, false);
+                np->setPaneMode("NOTES", false);
+                np->refreshPersonalNoteView(true);
+            }
+            saveSettings();
+        }
+
+        statusBar()->showMessage(
+            QString("📝 Extrait #%1 (%2) ajouté à la note personnelle de %3 !")
+                .arg(note.excerptCount)
+                .arg(sourceTitle)
+                .arg(note.frenchRef),
+            6000
+        );
+    });
+
+    connect(p, &UniversalPaneWidget::openPersonalNoteForVerseRequested, this,
+            [this](int sourceIdx, const QString& swordKey) {
+        QString b; int c = 1, v = 1;
+        m_engine->splitSwordKey(swordKey, b, c, v);
+
+        UniversalPaneWidget* target = nullptr;
+        for (int j = 0; j < paneCount(); ++j) {
+            if (isPaneActiveInLayout(j) && paneAt(j) && paneAt(j)->paneMode() == "NOTES") {
+                target = paneAt(j);
+                break;
+            }
+        }
+        if (!target) {
+            int targetIdx = pickFallbackActivePane(sourceIdx, 2);
+            target = paneAt(targetIdx);
+            if (target) {
+                target->setPaneMode("NOTES", false);
+            }
+        }
+        if (target) {
+            target->loadPassage(b, c, v, false, false);
+            target->refreshPersonalNoteView(false);
+        }
+        statusBar()->showMessage(
+            QString("📝 Fiche d'étude personnelle ouverte pour %1.").arg(m_engine->toFrenchReference(swordKey)),
+            6000
+        );
+        saveSettings();
+    });
+
+    connect(p, &UniversalPaneWidget::personalNoteModified, this,
+            [this, p](const QString& swordKey) {
+        QString b; int c = 1, v = 1;
+        m_engine->splitSwordKey(swordKey, b, c, v);
+
+        if (m_leftScreen) {
+            m_leftScreen->refreshPersonalNotesTree();
+        }
+
+        for (int j = 0; j < paneCount(); ++j) {
+            UniversalPaneWidget* other = paneAt(j);
+            if (!other || other == p) continue;
+            if (other->paneMode() == "BIBLE" && other->book() == b && other->chapter() == c) {
+                other->refreshContent(false);
+            } else if (other->paneMode() == "NOTES" && other->swordKey() == swordKey) {
+                other->refreshPersonalNoteView(false);
+            }
+        }
+    });
+
+    connect(p, &UniversalPaneWidget::navigateToReferenceRequested, this, [this](int, const QString& swordKey) {
+        QString b; int c = 1, v = 1;
+        m_engine->splitSwordKey(swordKey, b, c, v);
+        navigateTo(b, c, v, true);
+    });
+
+    connect(p, &UniversalPaneWidget::navigateToReferenceInPaneRequested, this,
+            [this](int sourcePaneIdx, int targetPaneIdx, const QString& swordKey) {
+        openReferenceInSpecificPane(targetPaneIdx, swordKey, QString(), sourcePaneIdx);
+    });
+
+    connect(p, &UniversalPaneWidget::requestStudyContext, this, [this](QString& outCtx, QStringList& outActiveBibles) {
+        outActiveBibles = collectActiveBibles();
+        QString key = QString("%1 %2:%3").arg(m_currentBook).arg(m_currentChapter).arg(m_currentVerse);
+        outCtx = m_engine->buildGeminiStudyContext(
+            key,
+            outActiveBibles,
+            collectCurrentStrongCode(),
+            QString(),
+            collectCurrentCommentaryModule()
+        );
+    });
+
+    connect(p, &UniversalPaneWidget::apiKeyUpdated, this, [this](const QString&, const QString&) {
+        for (int j = 0; j < paneCount(); ++j) {
+            if (paneAt(j)) paneAt(j)->notifyGeminiUpdated();
+        }
+        saveSettings();
+    });
+
+    connect(p, &UniversalPaneWidget::styleChanged, this, [this, p]() {
+        if (p->paneIndex() == 0 && paneAt(0)) {
+            applyStylePalette(paneAt(0)->paneStyle());
+        }
+        saveSettings();
+    });
+
+    connect(p, &UniversalPaneWidget::applyStyleToAllRequested, this, &MainWindow::applyStyleToAllModules);
+
+    connect(p, &UniversalPaneWidget::statusNotification, this, [this](const QString& msg) {
+        statusBar()->showMessage(msg, 6000);
+    });
+
+    connect(p, &UniversalPaneWidget::splitPaneRequested, this, [this](UniversalPaneWidget* srcPane, int orient, const QString& mode) {
+        splitPane(srcPane, static_cast<Qt::Orientation>(orient), mode, true);
+    });
+
+    connect(p, &UniversalPaneWidget::closePaneRequested, this, [this](UniversalPaneWidget* targetPane) {
+        closePane(targetPane);
+    });
+}
+
+UniversalPaneWidget* MainWindow::splitPane(UniversalPaneWidget* sourcePane, Qt::Orientation orientation, const QString& initialMode, bool recordAndSave) {
+    if (!sourcePane) return nullptr;
+    auto* parentSplitter = qobject_cast<QSplitter*>(sourcePane->parentWidget());
+    if (!parentSplitter) return nullptr;
+
+    int idxInParent = parentSplitter->indexOf(sourcePane);
+    if (idxInParent < 0) return nullptr;
+
+    QList<int> oldParentSizes = parentSplitter->sizes();
+    int totalDim = (orientation == Qt::Vertical)
+        ? std::max(320, sourcePane->height())
+        : std::max(320, sourcePane->width());
+
+    int newPaneIdx = paneCount();
+    auto* newPane = new UniversalPaneWidget(newPaneIdx, m_engine.get(), m_gemini, this);
+    newPane->setPaneStyle(sourcePane->paneStyle());
+    newPane->setBibleModule(sourcePane->bibleModule(), false);
+    newPane->setCommentaryModule(sourcePane->commentaryModule(), false);
+    newPane->setDictionaryModule(sourcePane->dictionaryModule(), false);
+    newPane->setAiResponseLanguage(sourcePane->aiResponseLanguage(), false);
+    newPane->setLinked(sourcePane->isLinked(), false);
+    newPane->loadPassage(sourcePane->book(), sourcePane->chapter(), sourcePane->verse(), true, false);
+    newPane->setPaneMode(initialMode, false);
+
+    connectPaneSignals(newPane);
+
+    auto* subSplitter = new QSplitter(orientation, parentSplitter);
+    subSplitter->setHandleWidth(6);
+    subSplitter->setChildrenCollapsible(false);
+    connect(subSplitter, &QSplitter::splitterMoved, this, [this](int, int) {
+        if (!m_isLoadingSettings) saveSettings();
+    });
+
+    parentSplitter->insertWidget(idxInParent, subSplitter);
+    subSplitter->addWidget(sourcePane);
+    subSplitter->addWidget(newPane);
+    sourcePane->show();
+    newPane->show();
+    subSplitter->show();
+
+    if (oldParentSizes.size() == parentSplitter->count()) {
+        parentSplitter->setSizes(oldParentSizes);
+    }
+    subSplitter->setSizes({totalDim / 2, totalDim / 2});
+
+    DynamicSplitRecord rec;
+    rec.targetPaneIndex = sourcePane->paneIndex();
+    rec.orientation = orientation;
+    rec.createdPane = newPane;
+    rec.createdSplitter = subSplitter;
+    m_dynamicSplits.push_back(rec);
+
+    if (recordAndSave && !m_isLoadingSettings) {
+        syncLeftTreeBibles();
+        saveSettings();
+        QString dirText = (orientation == Qt::Vertical) ? "en dessous de" : "à droite de";
+        statusBar()->showMessage(
+            QString("➕ Fenêtre %1 (%2) ajoutée %3 la Fenêtre %4 — glissez la barre de séparation pour ajuster sa taille.")
+                .arg(newPaneIdx + 1)
+                .arg(initialMode)
+                .arg(dirText)
+                .arg(sourcePane->paneIndex() + 1),
+            6500
+        );
+    }
+    return newPane;
+}
+
+void MainWindow::closePane(UniversalPaneWidget* targetPane) {
+    if (!targetPane) return;
+
+    int activeCount = 0;
+    for (int i = 0; i < paneCount(); ++i) {
+        if (isPaneActiveInLayout(i)) ++activeCount;
+    }
+    if (activeCount <= 1) {
+        statusBar()->showMessage("⚠️ Impossible de fermer la dernière fenêtre : il doit rester au moins une fenêtre ouverte à l'écran.", 6000);
+        return;
+    }
+
+    int closedIdx = targetPane->paneIndex();
+
+    // Cas 1 : Fenêtre dynamique créée via ➕⬇ ou ➕➡
+    int dynIdx = -1;
+    for (int k = 0; k < m_dynamicSplits.size(); ++k) {
+        if (m_dynamicSplits[k].createdPane == targetPane) {
+            dynIdx = k;
+            break;
+        }
+    }
+
+    if (dynIdx >= 0) {
+        QSplitter* subSplitter = m_dynamicSplits[dynIdx].createdSplitter;
+        if (subSplitter) {
+            QWidget* sibling = nullptr;
+            if (subSplitter->count() == 2) {
+                sibling = (subSplitter->widget(0) == targetPane) ? subSplitter->widget(1) : subSplitter->widget(0);
+            }
+            auto* grandParent = qobject_cast<QSplitter*>(subSplitter->parentWidget());
+            if (grandParent && sibling) {
+                QList<int> gpSizes = grandParent->sizes();
+                int posInGp = grandParent->indexOf(subSplitter);
+                if (posInGp >= 0) {
+                    grandParent->insertWidget(posInGp, sibling);
+                    sibling->show();
+                    if (gpSizes.size() == grandParent->count()) {
+                        grandParent->setSizes(gpSizes);
+                    }
+                }
+            }
+            subSplitter->hide();
+            subSplitter->deleteLater();
+        }
+        m_dynamicSplits.removeAt(dynIdx);
+        targetPane->hide();
+        targetPane->deleteLater();
+
+        // Ré-indexer les fenêtres dynamiques restantes
+        for (int k = 0; k < m_dynamicSplits.size(); ++k) {
+            if (m_dynamicSplits[k].createdPane) {
+                m_dynamicSplits[k].createdPane->setPaneIndex(4 + k);
+            }
+        }
+    } else {
+        // Cas 2 : L'une des 4 fenêtres de base (0..3)
+        targetPane->setVisible(false);
+
+        // Si plus aucune fenêtre dans la colonne de droite n'est visible, masquer m_rightScreen pour donner toute la largeur au centre
+        if (m_rightScreen) {
+            bool anyRightVisible = false;
+            for (int i = 0; i < paneCount(); ++i) {
+                UniversalPaneWidget* p = paneAt(i);
+                if (p && !p->isHidden() && m_rightScreen->isAncestorOf(p)) {
+                    anyRightVisible = true;
+                    break;
+                }
+            }
+            if (!anyRightVisible) {
+                m_rightScreen->setVisible(false);
+            }
+        }
+    }
+
+    syncLeftTreeBibles();
+    saveSettings();
+    statusBar()->showMessage(
+        QString("✕ Fenêtre %1 fermée — cliquez sur ➕⬇ ou ➕➡ dans n'importe quelle fenêtre (ou sur « 📐 Mise en page ») pour en rouvrir une.")
+            .arg(closedIdx + 1),
+        6500
+    );
+}
+
+void MainWindow::clearDynamicSplits() {
+    // Dépiler en ordre inverse (LIFO) pour restaurer proprement la hiérarchie des QSplitters de base
+    for (int k = m_dynamicSplits.size() - 1; k >= 0; --k) {
+        QSplitter* subSplitter = m_dynamicSplits[k].createdSplitter;
+        UniversalPaneWidget* createdPane = m_dynamicSplits[k].createdPane;
+        if (subSplitter) {
+            QWidget* sibling = nullptr;
+            if (subSplitter->count() == 2) {
+                sibling = (subSplitter->widget(0) == createdPane) ? subSplitter->widget(1) : subSplitter->widget(0);
+            }
+            auto* grandParent = qobject_cast<QSplitter*>(subSplitter->parentWidget());
+            if (grandParent && sibling) {
+                int posInGp = grandParent->indexOf(subSplitter);
+                if (posInGp >= 0) {
+                    grandParent->insertWidget(posInGp, sibling);
+                }
+            }
+            delete subSplitter;
+        }
+        delete createdPane;
+    }
+    m_dynamicSplits.clear();
 }
 
 void MainWindow::toggleLeftSidebar() {
@@ -568,6 +771,15 @@ void MainWindow::openLayoutSelectorDialog(bool isFirstStartup) {
 void MainWindow::applyWorkspaceLayout(const WorkspaceLayoutConfig& cfg, bool applyScreenGeometry, bool updatePaneModes) {
     m_isLoadingSettings = true;
     m_layoutConfig = cfg;
+
+    // Si l'utilisateur choisit un modèle prédéfini dans « 📐 Mise en page », réinitialiser les divisions dynamiques
+    if (updatePaneModes) {
+        clearDynamicSplits();
+    }
+
+    // S'assurer que les fenêtres de base principales (Fenêtre 1 et Fenêtre 3) sont de nouveau visibles
+    if (m_centerScreen && m_centerScreen->pane(0)) m_centerScreen->pane(0)->setVisible(true);
+    if (m_rightScreen && m_rightScreen->pane(0)) m_rightScreen->pane(0)->setVisible(true);
 
     // 1. Appliquer les modes des fenêtres si demandé
     if (updatePaneModes) {
@@ -711,7 +923,7 @@ void MainWindow::applyWorkspaceLayout(const WorkspaceLayoutConfig& cfg, bool app
 
 QStringList MainWindow::collectActiveBibles() const {
     QStringList list;
-    for (int i = 0; i < 4; ++i) {
+    for (int i = 0; i < paneCount(); ++i) {
         UniversalPaneWidget* p = paneAt(i);
         if (isPaneActiveInLayout(i) && p && p->paneMode() == "BIBLE" && !p->bibleModule().isEmpty()) {
             if (!list.contains(p->bibleModule())) {
@@ -729,7 +941,7 @@ QStringList MainWindow::collectActiveBibles() const {
 }
 
 QString MainWindow::collectCurrentStrongCode() const {
-    for (int i = 0; i < 4; ++i) {
+    for (int i = 0; i < paneCount(); ++i) {
         UniversalPaneWidget* p = paneAt(i);
         if (isPaneActiveInLayout(i) && p && p->paneMode() == "DICTIONARY" && !p->currentStrongCode().isEmpty()) {
             return p->currentStrongCode();
@@ -739,7 +951,7 @@ QString MainWindow::collectCurrentStrongCode() const {
 }
 
 QString MainWindow::collectCurrentCommentaryModule() const {
-    for (int i = 0; i < 4; ++i) {
+    for (int i = 0; i < paneCount(); ++i) {
         UniversalPaneWidget* p = paneAt(i);
         if (isPaneActiveInLayout(i) && p && p->paneMode() == "COMMENTARY" && !p->commentaryModule().isEmpty()) {
             return p->commentaryModule();
@@ -783,7 +995,7 @@ void MainWindow::applyStyleToAllModules(const PaneStyle& style) {
     PaneStyle leftSt = style;
     leftSt.fontSizePt = std::clamp(style.fontSizePt - 3, 10, 22);
     m_leftScreen->setPaneStyle(leftSt);
-    for (int i = 0; i < 4; ++i) {
+    for (int i = 0; i < paneCount(); ++i) {
         if (paneAt(i)) paneAt(i)->setPaneStyle(style);
     }
     applyStylePalette(style);
@@ -795,7 +1007,7 @@ void MainWindow::openModuleInstallerDialog() {
     ModuleInstallerDialog dlg(m_engine.get(), this);
     connect(&dlg, &ModuleInstallerDialog::modulesChanged, this, [this]() {
         m_leftScreen->reloadModuleLists();
-        for (int i = 0; i < 4; ++i) {
+        for (int i = 0; i < paneCount(); ++i) {
             if (paneAt(i)) {
                 paneAt(i)->reloadModuleLists();
             }
@@ -848,18 +1060,128 @@ void MainWindow::navigateTo(const QString& swordBook, int chapter, int verse, bo
     m_leftScreen->syncCurrentReference(swordBook, chapter, verse);
 
     bool anyLinked = false;
-    for (int i = 0; i < 4; ++i) {
+    for (int i = 0; i < paneCount(); ++i) {
         UniversalPaneWidget* p = paneAt(i);
         if (p && p->isLinked()) {
             p->loadPassage(swordBook, chapter, verse, true, false);
             anyLinked = true;
         }
     }
-    if (!anyLinked && paneAt(0)) {
+    if ((!anyLinked || (paneAt(0) && !paneAt(0)->isLinked())) && paneAt(0)) {
         paneAt(0)->loadPassage(swordBook, chapter, verse, true, false);
     }
 
     saveSettings();
+}
+
+void MainWindow::openReferenceInSpecificPane(int targetPaneIndex, const QString& swordKey, const QString& preferredBibleMod, int sourcePaneIndex) {
+    QString b; int c = 1, v = 1;
+    m_engine->splitSwordKey(swordKey, b, c, v);
+    if (b.isEmpty()) return;
+
+    const QString displayRef = m_engine->toFrenchReference(swordKey);
+
+    // Cas 1 : Création d'une nouvelle fenêtre Bible dédiée (sans perturber l'étude principale)
+    if (targetPaneIndex == -1) {
+        UniversalPaneWidget* src = paneAt(sourcePaneIndex);
+        if (!src || !isPaneActiveInLayout(sourcePaneIndex)) {
+            src = paneAt(0);
+        }
+        UniversalPaneWidget* created = splitPane(src, Qt::Vertical, "BIBLE", true);
+        if (created) {
+            created->setLinked(false, false);
+            if (!preferredBibleMod.isEmpty()) {
+                created->setBibleModule(preferredBibleMod, false);
+            }
+            created->loadPassage(b, c, v, true, false);
+            syncLeftTreeBibles();
+            saveSettings();
+            statusBar()->showMessage(
+                SwordEngine::uiTr(
+                    QString("📖 %1 ouvert dans la nouvelle Fenêtre %2 (indépendante de l'étude principale).").arg(displayRef).arg(created->paneIndex() + 1),
+                    QString("📖 %1 opened in new Window %2 (independent from main study).").arg(displayRef).arg(created->paneIndex() + 1),
+                    QString("📖 %1 abierto en la nueva Ventana %2 (independiente del estudio principal).").arg(displayRef).arg(created->paneIndex() + 1)
+                ),
+                6000
+            );
+        }
+        return;
+    }
+
+    // Cas 2 : Fenêtre 1 (fenêtre de travail principale par défaut)
+    if (targetPaneIndex == 0) {
+        if (paneAt(0)) {
+            if (!preferredBibleMod.isEmpty()) {
+                paneAt(0)->setBibleModule(preferredBibleMod, false);
+            }
+            if (paneAt(0)->paneMode() != "BIBLE") {
+                paneAt(0)->setPaneMode("BIBLE", false);
+            }
+        }
+        navigateTo(b, c, v, true);
+        syncLeftTreeBibles();
+        statusBar()->showMessage(
+            SwordEngine::uiTr(
+                QString("📖 %1 ouvert dans la Fenêtre 1 (fenêtre par défaut).").arg(displayRef),
+                QString("📖 %1 opened in Window 1 (default window).").arg(displayRef),
+                QString("📖 %1 abierto en la Ventana 1 (ventana por defecto).").arg(displayRef)
+            ),
+            5000
+        );
+        return;
+    }
+
+    // Cas 3 : Fenêtre spécifique choisie par clic droit (Fenêtre 2, 3, 4, 5...)
+    UniversalPaneWidget* target = paneAt(targetPaneIndex);
+    if (!target) {
+        targetPaneIndex = pickFallbackActivePane(0, targetPaneIndex);
+        target = paneAt(targetPaneIndex);
+    }
+    if (!target) return;
+
+    // Rendre la fenêtre cible (et son conteneur parent) visible si elle était masquée
+    target->setVisible(true);
+    if (m_centerScreen && m_centerScreen->isAncestorOf(target)) {
+        m_centerScreen->setVisible(true);
+    }
+    if (m_rightScreen && m_rightScreen->isAncestorOf(target)) {
+        if (m_rightScreen->isHidden()) {
+            m_rightScreen->setVisible(true);
+            QList<int> s = m_mainHorizontalSplitter->sizes();
+            if (s.size() == 3 && s[2] < 120) {
+                int give = std::max(360, (s[1] + s[2]) / 2);
+                s[1] = std::max(360, s[1] - give);
+                s[2] = give;
+                m_mainHorizontalSplitter->setSizes(s);
+            }
+        }
+    }
+
+    // Délier cette fenêtre pour ne pas interrompre l'étude en cours dans la Fenêtre 1
+    target->setLinked(false, false);
+    if (targetPaneIndex == 1 && m_centerScreen) {
+        m_centerScreen->setColumnsLinked(false);
+    }
+
+    if (!preferredBibleMod.isEmpty()) {
+        target->setBibleModule(preferredBibleMod, false);
+    }
+    if (target->paneMode() != "BIBLE") {
+        target->setPaneMode("BIBLE", false);
+    }
+
+    target->loadPassage(b, c, v, true, false);
+    syncLeftTreeBibles();
+    saveSettings();
+
+    statusBar()->showMessage(
+        SwordEngine::uiTr(
+            QString("📖 %1 ouvert dans la Fenêtre %2 (sans modifier votre étude dans la Fenêtre 1).").arg(displayRef).arg(targetPaneIndex + 1),
+            QString("📖 %1 opened in Window %2 (without changing your study in Window 1).").arg(displayRef).arg(targetPaneIndex + 1),
+            QString("📖 %1 abierto en la Ventana %2 (sin modificar su estudio en la Ventana 1).").arg(displayRef).arg(targetPaneIndex + 1)
+        ),
+        6000
+    );
 }
 
 QString MainWindow::settingsFilePath() const {
@@ -871,6 +1193,7 @@ QString MainWindow::settingsFilePath() const {
 
 void MainWindow::loadSettings() {
     m_isLoadingSettings = true;
+    clearDynamicSplits();
 
     const auto screens = QGuiApplication::screens();
     bool hasTwoMonitors = (screens.size() >= 2);
@@ -1027,11 +1350,70 @@ void MainWindow::loadSettings() {
         }
     }
 
-    for (int i = 0; i < 4; ++i) {
+    applyWorkspaceLayout(m_layoutConfig, false, false);
+
+    // Restaurer les divisions dynamiques ajoutées via ➕⬇ / ➕➡ (s'il y en a)
+    if (obj.contains("dynamicSplits") && obj.value("dynamicSplits").isArray()) {
+        QJsonArray splitsArr = obj.value("dynamicSplits").toArray();
+        for (const auto& val : splitsArr) {
+            if (!val.isObject()) continue;
+            QJsonObject so = val.toObject();
+            int targetIdx = so.value("targetPaneIndex").toInt(0);
+            Qt::Orientation orient = (so.value("orientation").toString("V") == "H") ? Qt::Horizontal : Qt::Vertical;
+            QJsonObject paneObj = so.value("pane").toObject();
+            QString initMode = paneObj.value("paneMode").toString("COMMENTARY");
+
+            UniversalPaneWidget* targetPane = paneAt(targetIdx);
+            if (targetPane) {
+                UniversalPaneWidget* created = splitPane(targetPane, orient, initMode, false);
+                if (created) {
+                    created->fromJson(paneObj);
+                    QList<int> spSizes = readIntArray(so, "splitterSizes");
+                    if (!m_dynamicSplits.isEmpty() && m_dynamicSplits.back().createdSplitter && spSizes.size() == 2 && (spSizes[0] + spSizes[1] > 40)) {
+                        m_dynamicSplits.back().createdSplitter->setSizes(spSizes);
+                    }
+                }
+            }
+        }
+    }
+
+    // Restaurer la visibilité personnalisée des 4 fenêtres de base (si l'utilisateur en a fermé une avec ✕)
+    if (obj.contains("basePaneVisible") && obj.value("basePaneVisible").isArray()) {
+        QJsonArray visArr = obj.value("basePaneVisible").toArray();
+        if (visArr.size() == 4) {
+            for (int i = 0; i < 4; ++i) {
+                if (paneAt(i)) {
+                    paneAt(i)->setVisible(visArr.at(i).toBool(true));
+                }
+            }
+            // Vérifier si m_rightScreen contient au moins une fenêtre visible
+            if (m_rightScreen) {
+                bool anyRightVis = false;
+                for (int i = 0; i < paneCount(); ++i) {
+                    UniversalPaneWidget* p = paneAt(i);
+                    if (p && !p->isHidden() && m_rightScreen->isAncestorOf(p)) {
+                        anyRightVis = true;
+                        break;
+                    }
+                }
+                m_rightScreen->setVisible(anyRightVis);
+            }
+            // Garantir qu'au moins une fenêtre est visible à l'écran
+            int activeCount = 0;
+            for (int i = 0; i < paneCount(); ++i) {
+                if (isPaneActiveInLayout(i)) ++activeCount;
+            }
+            if (activeCount == 0 && paneAt(0)) {
+                m_centerScreen->setVisible(true);
+                paneAt(0)->setVisible(true);
+            }
+        }
+    }
+
+    for (int i = 0; i < paneCount(); ++i) {
         if (paneAt(i)) paneAt(i)->notifyGeminiUpdated();
     }
 
-    applyWorkspaceLayout(m_layoutConfig, false, false);
     syncLeftTreeBibles();
     m_leftScreen->syncCurrentReference(m_currentBook, m_currentChapter, m_currentVerse);
     m_isLoadingSettings = false;
@@ -1094,12 +1476,29 @@ void MainWindow::saveSettings() const {
     obj["leftStyle"] = m_leftScreen->paneStyle().toJson();
 
     QJsonArray panesArr;
+    QJsonArray baseVisArr;
     for (int i = 0; i < 4; ++i) {
         if (paneAt(i)) {
             panesArr.append(paneAt(i)->toJson());
+            baseVisArr.append(isPaneActiveInLayout(i));
+        } else {
+            baseVisArr.append(false);
         }
     }
     obj["panes"] = panesArr;
+    obj["basePaneVisible"] = baseVisArr;
+
+    QJsonArray splitsArr;
+    for (const auto& rec : m_dynamicSplits) {
+        if (!rec.createdPane || !rec.createdSplitter) continue;
+        QJsonObject so;
+        so["targetPaneIndex"] = rec.targetPaneIndex;
+        so["orientation"] = (rec.orientation == Qt::Vertical) ? "V" : "H";
+        so["splitterSizes"] = toJsonArray(rec.createdSplitter->sizes());
+        so["pane"] = rec.createdPane->toJson();
+        splitsArr.append(so);
+    }
+    obj["dynamicSplits"] = splitsArr;
 
     QFile f(settingsFilePath());
     if (f.open(QIODevice::WriteOnly | QIODevice::Truncate)) {

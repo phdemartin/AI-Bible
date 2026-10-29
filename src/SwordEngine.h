@@ -115,6 +115,16 @@ public:
     QVector<ModuleInfo> getCommentaryModules() const { return m_commentaries; }
     QVector<ModuleInfo> getLexiconModules() const { return m_lexicons; }
     QString getModuleDescription(const QString& modName) const;
+    QString getModuleLanguage(const QString& modName) const;
+    QStringList getInstalledStudyLanguages() const;
+
+    static QString detectSystemLanguageCode();
+    static QString uiTr(const QString& fr, const QString& en, const QString& es = QString());
+    static QString localizedBookName(const BookInfo& b);
+    static QString languageFlag(const QString& langCode);
+    static QString languageNativeName(const QString& langCode);
+    static QString languageFlagAndName(const QString& langCode);
+    static bool isAncientBiblicalLanguage(const QString& langCode);
 
     // Books & Navigation
     const QVector<BookInfo>& getBooks() const { return m_books; }

@@ -19,6 +19,7 @@
 #include <QJsonDocument>
 #include <QJsonArray>
 #include <QDateTime>
+#include <QLocale>
 #include <algorithm>
 
 using namespace sword;
@@ -417,6 +418,144 @@ QString SwordEngine::getModuleDescription(const QString& modName) const {
     return modName;
 }
 
+QString SwordEngine::getModuleLanguage(const QString& modName) const {
+    for (const auto& m : m_bibles) if (m.name == modName) return m.language;
+    for (const auto& m : m_commentaries) if (m.name == modName) return m.language;
+    for (const auto& m : m_lexicons) if (m.name == modName) return m.language;
+    if (modName == "ALL_FR") return "fr";
+    return QString();
+}
+
+bool SwordEngine::isAncientBiblicalLanguage(const QString& langCode) {
+    QString c = langCode.trimmed().toLower();
+    return (c == "grc" || c == "he" || c == "hbo" || c == "la" || c == "syc" ||
+            c == "cop" || c == "arc" || c == "egy" || c == "got" || c == "cu" || c == "gez");
+}
+
+QString SwordEngine::detectSystemLanguageCode() {
+    QString sys = QLocale::system().name().section('_', 0, 0).section('-', 0, 0).trimmed().toLower();
+    if (sys.isEmpty() || sys == "c" || sys == "posix") {
+        QString envLang = qEnvironmentVariable("LANG").section('.', 0, 0).section('_', 0, 0).trimmed().toLower();
+        if (!envLang.isEmpty() && envLang != "c" && envLang != "posix") {
+            sys = envLang;
+        } else {
+            sys = "en";
+        }
+    }
+    return sys;
+}
+
+QString SwordEngine::uiTr(const QString& fr, const QString& en, const QString& es) {
+    static const QString sysLang = detectSystemLanguageCode();
+    if (sysLang == "fr") return fr;
+    if (sysLang == "es") return es.isEmpty() ? en : es;
+    return en;
+}
+
+QString SwordEngine::localizedBookName(const BookInfo& b) {
+    static const QString sysLang = detectSystemLanguageCode();
+    if (sysLang == "fr") return b.frenchName;
+    if (sysLang == "es") {
+        static const QMap<QString, QString> esBooks = {
+            {"Genesis", "Génesis"}, {"Exodus", "Éxodo"}, {"Leviticus", "Levítico"}, {"Numbers", "Números"},
+            {"Deuteronomy", "Deuteronomio"}, {"Joshua", "Josué"}, {"Judges", "Jueces"}, {"Ruth", "Rut"},
+            {"I Samuel", "1 Samuel"}, {"II Samuel", "2 Samuel"}, {"I Kings", "1 Reyes"}, {"II Kings", "2 Reyes"},
+            {"I Chronicles", "1 Crónicas"}, {"II Chronicles", "2 Crónicas"}, {"Ezra", "Esdras"}, {"Nehemiah", "Nehemías"},
+            {"Esther", "Ester"}, {"Job", "Job"}, {"Psalms", "Salmos"}, {"Proverbs", "Proverbios"},
+            {"Ecclesiastes", "Eclesiastés"}, {"Song of Solomon", "Cantares"}, {"Isaiah", "Isaías"}, {"Jeremiah", "Jeremías"},
+            {"Lamentations", "Lamentaciones"}, {"Ezekiel", "Ezequiel"}, {"Daniel", "Daniel"}, {"Hosea", "Oseas"},
+            {"Joel", "Joel"}, {"Amos", "Amós"}, {"Obadiah", "Abdías"}, {"Jonah", "Jonás"},
+            {"Micah", "Miqueas"}, {"Nahum", "Nahúm"}, {"Habakkuk", "Habacuc"}, {"Zephaniah", "Sofonías"},
+            {"Haggai", "Hageo"}, {"Zechariah", "Zacarías"}, {"Malachi", "Malaquías"}, {"Matthew", "Mateo"},
+            {"Mark", "Marcos"}, {"Luke", "Lucas"}, {"John", "Juan"}, {"Acts", "Hechos"},
+            {"Romans", "Romanos"}, {"I Corinthians", "1 Corintios"}, {"II Corinthians", "2 Corintios"}, {"Galatians", "Gálatas"},
+            {"Ephesians", "Efesios"}, {"Philippians", "Filipenses"}, {"Colossians", "Colosenses"},
+            {"I Thessalonians", "1 Tesalonicenses"}, {"II Thessalonians", "2 Tesalonicenses"},
+            {"I Timothy", "1 Timoteo"}, {"II Timothy", "2 Timoteo"}, {"Titus", "Tito"}, {"Philemon", "Filemón"},
+            {"Hebrews", "Hebreos"}, {"James", "Santiago"}, {"I Peter", "1 Pedro"}, {"II Peter", "2 Pedro"},
+            {"I John", "1 Juan"}, {"II John", "2 Juan"}, {"III John", "3 Juan"}, {"Jude", "Judas"},
+            {"Revelation of John", "Apocalipsis"}
+        };
+        return esBooks.value(b.swordName, b.swordName);
+    }
+    if (b.swordName == "Revelation of John") return "Revelation";
+    if (b.swordName.startsWith("III ")) return "3 " + b.swordName.mid(4);
+    if (b.swordName.startsWith("II ")) return "2 " + b.swordName.mid(3);
+    if (b.swordName.startsWith("I ")) return "1 " + b.swordName.mid(2);
+    return b.swordName;
+}
+
+QString SwordEngine::languageFlag(const QString& langCode) {
+    QString c = langCode.trimmed().toLower().section('-', 0, 0).section('_', 0, 0);
+    static const QMap<QString, QString> flags = {
+        {"fr", "🇫🇷"}, {"en", "🇬🇧"}, {"es", "🇪🇸"}, {"de", "🇩🇪"}, {"pt", "🇵🇹"},
+        {"it", "🇮🇹"}, {"nl", "🇳🇱"}, {"ru", "🇷🇺"}, {"uk", "🇺🇦"}, {"pl", "🇵🇱"},
+        {"ro", "🇷🇴"}, {"cs", "🇨🇿"}, {"sk", "🇸🇰"}, {"hu", "🇭🇺"}, {"bg", "🇧🇬"},
+        {"sr", "🇷🇸"}, {"hr", "🇭🇷"}, {"el", "🇬🇷"}, {"grc", "🏛️"}, {"he", "🇮🇱"},
+        {"hbo", "🕎"}, {"la", "🏛️"}, {"ar", "🇸🇦"}, {"fa", "🇮🇷"}, {"tr", "🇹🇷"},
+        {"zh", "🇨🇳"}, {"ja", "🇯🇵"}, {"ko", "🇰🇷"}, {"vi", "🇻🇳"}, {"th", "🇹🇭"},
+        {"id", "🇮🇩"}, {"ms", "🇲🇾"}, {"tl", "🇵🇭"}, {"hi", "🇮🇳"}, {"ta", "🇮🇳"},
+        {"sw", "🇰🇪"}, {"af", "🇿🇦"}, {"sv", "🇸🇪"}, {"no", "🇳🇴"}, {"nb", "🇳🇴"},
+        {"da", "🇩🇰"}, {"fi", "🇫🇮"}, {"eo", "🌍"}
+    };
+    return flags.value(c, "🌐");
+}
+
+QString SwordEngine::languageNativeName(const QString& langCode) {
+    QString c = langCode.trimmed().toLower().section('-', 0, 0).section('_', 0, 0);
+    static const QMap<QString, QString> names = {
+        {"fr", "Français"}, {"en", "English"}, {"es", "Español"}, {"de", "Deutsch"},
+        {"pt", "Português"}, {"it", "Italiano"}, {"nl", "Nederlands"}, {"ru", "Русский"},
+        {"uk", "Українська"}, {"pl", "Polski"}, {"ro", "Română"}, {"cs", "Čeština"},
+        {"sk", "Slovenčina"}, {"hu", "Magyar"}, {"bg", "Български"}, {"sr", "Српски"},
+        {"hr", "Hrvatski"}, {"el", "Ελληνικά"}, {"grc", "Grec Ancien (Koïné)"},
+        {"he", "Hébreu / עברית"}, {"hbo", "Hébreu Biblique"}, {"la", "Latin"},
+        {"ar", "العربية (Arabe)"}, {"fa", "فارسی (Persan)"}, {"tr", "Türkçe"},
+        {"zh", "中文 (Chinois)"}, {"ja", "日本語 (Japonais)"}, {"ko", "한국어 (Coréen)"},
+        {"vi", "Tiếng Việt"}, {"th", "ไทย"}, {"id", "Bahasa Indonesia"},
+        {"tl", "Tagalog"}, {"hi", "हिन्दी (Hindi)"}, {"sw", "Kiswahili"},
+        {"af", "Afrikaans"}, {"sv", "Svenska"}, {"no", "Norsk"}, {"nb", "Norsk"},
+        {"da", "Dansk"}, {"fi", "Suomi"}, {"eo", "Esperanto"}
+    };
+    if (names.contains(c)) return names.value(c);
+    return c.toUpper();
+}
+
+QString SwordEngine::languageFlagAndName(const QString& langCode) {
+    QString c = langCode.trimmed().toLower();
+    if (c == "auto") return uiTr("🔄 Auto (selon la Bible active)", "🔄 Auto (from active Bible)", "🔄 Auto (según la Biblia activa)");
+    if (c == "fr_es") return "🇫🇷+🇪🇸 Français & Español";
+    return QString("%1 %2").arg(languageFlag(c), languageNativeName(c));
+}
+
+QStringList SwordEngine::getInstalledStudyLanguages() const {
+    QStringList result;
+    auto addLangIfModern = [&](const QString& rawCode) {
+        QString c = rawCode.trimmed().toLower().section('-', 0, 0).section('_', 0, 0);
+        if (c.isEmpty() || c == "und" || isAncientBiblicalLanguage(c)) return;
+        if (!result.contains(c)) {
+            result.push_back(c);
+        }
+    };
+
+    // 1. Parcourir les langues de toutes les Bibles installées
+    for (const auto& b : m_bibles) {
+        addLangIfModern(b.language);
+    }
+    // 2. Parcourir les langues des Commentaires installés
+    for (const auto& cm : m_commentaries) {
+        addLangIfModern(cm.language);
+    }
+    // 3. Ajouter aussi la langue du système d'exploitation (ex: "en" si l'OS est en anglais)
+    addLangIfModern(detectSystemLanguageCode());
+
+    // 4. Si aucun module moderne n'est encore installé, proposer au moins la langue système + FR / EN / ES
+    if (result.isEmpty()) {
+        result = {"fr", "en", "es"};
+    }
+    return result;
+}
+
 const BookInfo* SwordEngine::findBookBySwordName(const QString& swordName) const {
     for (const auto& b : m_books) {
         if (b.swordName.compare(swordName, Qt::CaseInsensitive) == 0 ||
@@ -579,7 +718,7 @@ QString SwordEngine::toFrenchReference(const QString& swordKey) const {
     int chap = 1, verse = 1;
     splitSwordKey(swordKey, bookSword, chap, verse);
     if (const BookInfo* b = findBookBySwordName(bookSword)) {
-        return QString("%1 %2:%3").arg(b->frenchName).arg(chap).arg(verse);
+        return QString("%1 %2:%3").arg(localizedBookName(*b)).arg(chap).arg(verse);
     }
     return swordKey;
 }
@@ -1372,6 +1511,14 @@ QVector<TskTopicGroup> SwordEngine::getTskForVerse(const QString& swordKey, cons
     QVector<TskTopicGroup> groups;
     if (!m_mgr) return groups;
 
+    QString effBible = previewBible;
+    if (effBible.isEmpty() || !m_mgr->getModule(effBible.toUtf8().constData())) {
+        if (m_mgr->getModule("FreSegond")) effBible = "FreSegond";
+        else if (m_mgr->getModule("FreLSG")) effBible = "FreLSG";
+        else if (m_mgr->getModule("KJV")) effBible = "KJV";
+        else if (!m_bibles.isEmpty()) effBible = m_bibles.first().name;
+    }
+
     VerseKey vk(swordKey.toUtf8().constData());
 
     auto addParsedListKey = [&](ListKey& lk, QVector<TskRefItem>& outRefs) {
@@ -1393,10 +1540,8 @@ QVector<TskTopicGroup> SwordEngine::getTskForVerse(const QString& swordKey, cons
                 splitSwordKey(endKey, endB, endC, endV);
                 item.frenchLabel += QString("-%1").arg(endV);
             }
-            item.versePreviewText = getCleanVerseText(previewBible, baseKey);
-            if (!item.versePreviewText.isEmpty()) {
-                outRefs.push_back(item);
-            }
+            item.versePreviewText = getCleanVerseText(effBible, baseKey);
+            outRefs.push_back(item);
         }
     };
 
@@ -1406,8 +1551,8 @@ QVector<TskTopicGroup> SwordEngine::getTskForVerse(const QString& swordKey, cons
         if (!frHtml.trimmed().isEmpty()) {
             QStringList lines = frHtml.split(QRegularExpression("<br\\s*/?>"), Qt::SkipEmptyParts);
             TskTopicGroup currentGroup;
-            currentGroup.sourceModule = "Fr_Tsk (Français)";
-            currentGroup.topicPhrase = "Références parallèles";
+            currentGroup.sourceModule = "Fr_Tsk";
+            currentGroup.topicPhrase = uiTr("Références parallèles", "Cross-References", "Referencias paralelas");
 
             for (QString line : lines) {
                 QString cleanLine = line.trimmed();
@@ -1417,7 +1562,7 @@ QVector<TskTopicGroup> SwordEngine::getTskForVerse(const QString& swordKey, cons
                         groups.push_back(currentGroup);
                     }
                     currentGroup = TskTopicGroup{};
-                    currentGroup.sourceModule = "Fr_Tsk (Français)";
+                    currentGroup.sourceModule = "Fr_Tsk";
                     currentGroup.topicPhrase = cleanLine.mid(1).trimmed();
                 } else if (cleanLine.startsWith('#')) {
                     QString refListStr = cleanLine.mid(1).trimmed();
@@ -1441,7 +1586,9 @@ QVector<TskTopicGroup> SwordEngine::getTskForVerse(const QString& swordKey, cons
         if (!enHtml.trimmed().isEmpty()) {
             TskTopicGroup enGroup;
             enGroup.sourceModule = "TSK";
-            enGroup.topicPhrase = "Passages parallèles complémentaires (TSK)";
+            enGroup.topicPhrase = uiTr("Passages parallèles complémentaires (TSK)",
+                                       "Additional Cross-References (TSK)",
+                                       "Pasajes paralelos complementarios (TSK)");
 
             static const QRegularExpression rxVal(R"(action=showRef&type=scripRef&value=([^"&]+))");
             auto it = rxVal.globalMatch(enHtml);
@@ -1465,10 +1612,8 @@ QVector<TskTopicGroup> SwordEngine::getTskForVerse(const QString& swordKey, cons
                     item.swordKey = baseKey;
                     item.rangeKey = QString::fromUtf8(elem->getRangeText());
                     item.frenchLabel = toFrenchReference(baseKey);
-                    item.versePreviewText = getCleanVerseText(previewBible, baseKey);
-                    if (!item.versePreviewText.isEmpty()) {
-                        enGroup.refs.push_back(item);
-                    }
+                    item.versePreviewText = getCleanVerseText(effBible, baseKey);
+                    enGroup.refs.push_back(item);
                 }
             }
             if (!enGroup.refs.isEmpty()) {
@@ -1484,8 +1629,16 @@ QString SwordEngine::renderTskHtml(const QString& swordKey, const QString& previ
     auto groups = getTskForVerse(swordKey, previewBible);
     if (groups.isEmpty()) return {};
 
-    QString html = QString(R"(<div><div style="margin-bottom:8px; font-weight:700; color:%1;">🔗 Versets Parallèles TSK (%2)</div>)")
-        .arg(style.accentColor, toFrenchReference(swordKey).toHtmlEscaped());
+    QString titleText = uiTr("🔗 Versets Parallèles TSK (%1)",
+                             "🔗 TSK Cross-References (%1)",
+                             "🔗 Versículos Paralelos TSK (%1)")
+                        .arg(toFrenchReference(swordKey).toHtmlEscaped());
+    QString hintText = uiTr("💡 Clic gauche : ouvrir dans la fenêtre par défaut  •  Clic droit : choisir dans quelle fenêtre ouvrir (Fenêtre 1, 2, 3, 4...)",
+                            "💡 Left-click: open in default window  •  Right-click: choose which window to open in (Window 1, 2, 3, 4...)",
+                            "💡 Clic izquierdo: abrir en ventana por defecto  •  Clic derecho: elegir en qué ventana abrir (Ventana 1, 2, 3, 4...)");
+
+    QString html = QString(R"(<div><div style="margin-bottom:3px; font-weight:700; color:%1;">%2</div><div style="font-size:0.84em; opacity:0.80; margin-bottom:8px;">%3</div>)")
+        .arg(style.accentColor, titleText, hintText);
 
     for (const auto& g : groups) {
         html += QString(R"(<div style="background:%1; border:1px solid %2; border-radius:8px; padding:10px 12px; margin-bottom:10px;">)")
@@ -1500,12 +1653,14 @@ QString SwordEngine::renderTskHtml(const QString& swordKey, const QString& previ
 
         for (const auto& r : g.refs) {
             QUrl u("app://ref/" + r.swordKey);
+            QString previewPart = r.versePreviewText.isEmpty()
+                ? QString()
+                : QString(" <span>— %1</span>").arg(r.versePreviewText.toHtmlEscaped());
             html += QString(R"(
                 <div style="border-left:3px solid %1; padding-left:8px; margin:6px 0;">
-                    <a href="%2" style="color:%1; font-weight:700; text-decoration:none;">%3</a>
-                    <span> — %4</span>
+                    <a href="%2" style="color:%1; font-weight:700; text-decoration:none;">%3</a>%4
                 </div>
-            )").arg(style.accentColor, u.toString(), r.frenchLabel.toHtmlEscaped(), r.versePreviewText.toHtmlEscaped());
+            )").arg(style.accentColor, u.toString(), r.frenchLabel.toHtmlEscaped(), previewPart);
         }
         html += "</div>";
     }

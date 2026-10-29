@@ -631,8 +631,199 @@ void InteractiveTextBrowser::wheelEvent(QWheelEvent* event) {
     QTextBrowser::wheelEvent(event);
 }
 
+namespace {
+
+struct AvailablePaneTarget {
+    int paneIndex = 0;
+    QString menuLabel;
+};
+
+static QString numberBadgeForIndex(int idx) {
+    static const QStringList badges = {"1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣"};
+    if (idx >= 0 && idx < badges.size()) return badges[idx];
+    return QString("#%1").arg(idx + 1);
+}
+
+static QVector<AvailablePaneTarget> collectAvailablePaneTargets(QWidget* contextWidget) {
+    QVector<AvailablePaneTarget> list;
+    QWidget* topWin = contextWidget ? contextWidget->window() : nullptr;
+    if (topWin) {
+        auto panes = topWin->findChildren<UniversalPaneWidget*>();
+        std::sort(panes.begin(), panes.end(), [](UniversalPaneWidget* a, UniversalPaneWidget* b) {
+            return a->paneIndex() < b->paneIndex();
+        });
+        for (UniversalPaneWidget* p : panes) {
+            if (!p) continue;
+            int idx = p->paneIndex();
+            QString modeSummary;
+            QString mode = p->paneMode();
+            if (mode == "BIBLE") {
+                modeSummary = QString("📖 %1").arg(p->bibleModule());
+            } else if (mode == "COMMENTARY") {
+                modeSummary = QString("📚 %1").arg(
+                    p->commentaryModule() == "ALL_FR"
+                        ? SwordEngine::uiTr("Commentaires + TSK", "Commentaries + TSK", "Comentarios + TSK")
+                        : p->commentaryModule()
+                );
+            } else if (mode == "DICTIONARY") {
+                modeSummary = QString("🏛️ %1").arg(
+                    p->dictionaryModule() == "AUTO_STRONG" ? "Strong Auto" : p->dictionaryModule()
+                );
+            } else if (mode == "AI") {
+                modeSummary = SwordEngine::uiTr("🤖 IA Gemini", "🤖 Gemini AI", "🤖 IA Gemini");
+            } else if (mode == "NOTES") {
+                modeSummary = SwordEngine::uiTr("📝 Notes", "📝 Notes", "📝 Notas");
+            }
+
+            QString winTitle = SwordEngine::uiTr("Fenêtre %1", "Window %1", "Ventana %1").arg(idx + 1);
+            QString hiddenSuffix;
+            if (p->isHidden() || (p->parentWidget() && p->parentWidget()->isHidden())) {
+                hiddenSuffix = SwordEngine::uiTr(" [masquée → afficher]", " [hidden → show]", " [oculta → mostrar]");
+            }
+            AvailablePaneTarget t;
+            t.paneIndex = idx;
+            t.menuLabel = QString("%1 %2 (%3)%4").arg(numberBadgeForIndex(idx), winTitle, modeSummary, hiddenSuffix);
+            list.push_back(t);
+        }
+    }
+
+    if (list.isEmpty()) {
+        for (int i = 0; i < 4; ++i) {
+            AvailablePaneTarget t;
+            t.paneIndex = i;
+            t.menuLabel = QString("%1 %2").arg(
+                numberBadgeForIndex(i),
+                SwordEngine::uiTr("Fenêtre %1", "Window %1", "Ventana %1").arg(i + 1)
+            );
+            list.push_back(t);
+        }
+    }
+    return list;
+}
+
+static QString commonContextMenuStyleSheet() {
+    return QStringLiteral(
+        "QMenu { background-color: #0F172A; color: #F8FAFC; border: 1px solid #38BDF8; padding: 6px; border-radius: 6px; }"
+        "QMenu::item { padding: 6px 16px; border-radius: 4px; font-size: 9.8pt; }"
+        "QMenu::item:selected { background-color: #0284C7; color: #FFFFFF; font-weight: bold; }"
+        "QMenu::item:disabled { color: #38BDF8; font-weight: bold; font-size: 9pt; }"
+        "QMenu::separator { height: 1px; background: #334155; margin: 4px 8px; }"
+    );
+}
+
+} // namespace
+
+bool InteractiveTextBrowser::extractRefLinkAtPos(const QPoint& pos, QString& outRawRef, QString& outDisplayLabel) const {
+    outRawRef.clear();
+    outDisplayLabel.clear();
+
+    // 1. Tester directement sous le curseur de la souris (et à ±4px)
+    QString href = anchorAt(pos);
+    if (href.isEmpty()) href = anchorAt(pos + QPoint(4, 0));
+    if (href.isEmpty()) href = anchorAt(pos - QPoint(4, 0));
+
+    QTextBlock block = cursorForPosition(pos).block();
+
+    if (href.startsWith("app://ref/")) {
+        outRawRef = QUrl::fromPercentEncoding(QUrl(href).path().mid(1).toUtf8()).replace('+', ' ').trimmed();
+        if (block.isValid()) {
+            for (auto it = block.begin(); !it.atEnd(); ++it) {
+                QTextFragment frag = it.fragment();
+                if (frag.isValid() && frag.charFormat().isAnchor() && frag.charFormat().anchorHref() == href) {
+                    outDisplayLabel = frag.text().trimmed();
+                    break;
+                }
+            }
+        }
+        if (outDisplayLabel.isEmpty()) outDisplayLabel = outRawRef;
+        return !outRawRef.isEmpty();
+    }
+
+    // 2. Si l'utilisateur fait un clic droit n'importe où sur une ligne TSK ou de recherche contenant un lien app://ref/...
+    if (block.isValid()) {
+        QString foundHref;
+        QString foundText;
+        int refAnchorCount = 0;
+        for (auto it = block.begin(); !it.atEnd(); ++it) {
+            QTextFragment frag = it.fragment();
+            if (!frag.isValid() || !frag.charFormat().isAnchor()) continue;
+            QString h = frag.charFormat().anchorHref();
+            if (h.startsWith("app://ref/")) {
+                foundHref = h;
+                foundText = frag.text().trimmed();
+                ++refAnchorCount;
+            }
+        }
+        if (refAnchorCount == 1 && !foundHref.isEmpty()) {
+            outRawRef = QUrl::fromPercentEncoding(QUrl(foundHref).path().mid(1).toUtf8()).replace('+', ' ').trimmed();
+            outDisplayLabel = foundText.isEmpty() ? outRawRef : foundText;
+            return !outRawRef.isEmpty();
+        }
+    }
+
+    return false;
+}
+
 void InteractiveTextBrowser::contextMenuEvent(QContextMenuEvent* event) {
     QString sel = cleanSelectedText();
+    QString rawRefLink;
+    QString refDisplayLabel;
+    bool hasRefLink = extractRefLinkAtPos(event->pos(), rawRefLink, refDisplayLabel);
+
+    // Si l'utilisateur fait un Clic Droit sur un lien TSK ou une référence biblique (sans sélection de texte multiple)
+    if (hasRefLink && sel.isEmpty()) {
+        QMenu menu(this);
+        menu.setStyleSheet(commonContextMenuStyleSheet());
+
+        QAction* headerAct = menu.addAction(
+            SwordEngine::uiTr("🔗 Référence TSK / Verset « %1 » — Choisir la fenêtre :",
+                              "🔗 TSK / Verse Reference \"%1\" — Choose window:",
+                              "🔗 Referencia TSK / Versículo « %1 » — Elegir ventana:")
+                .arg(refDisplayLabel)
+        );
+        headerAct->setEnabled(false);
+        menu.addSeparator();
+
+        QAction* actDefault = menu.addAction(
+            SwordEngine::uiTr("⭐ Ouvrir « %1 » dans la fenêtre par défaut (Fenêtre de travail)",
+                              "⭐ Open \"%1\" in default working window",
+                              "⭐ Abrir « %1 » en la ventana de trabajo por defecto")
+                .arg(refDisplayLabel)
+        );
+        connect(actDefault, &QAction::triggered, this, [this, rawRefLink]() {
+            emit openReferenceInPaneRequested(-2, rawRefLink);
+        });
+
+        menu.addSeparator();
+
+        const auto targets = collectAvailablePaneTargets(this);
+        for (const auto& t : targets) {
+            QAction* actPane = menu.addAction(
+                SwordEngine::uiTr("📖 Ouvrir « %1 » dans %2",
+                                  "📖 Open \"%1\" in %2",
+                                  "📖 Abrir « %1 » en %2")
+                    .arg(refDisplayLabel, t.menuLabel)
+            );
+            int targetIdx = t.paneIndex;
+            connect(actPane, &QAction::triggered, this, [this, targetIdx, rawRefLink]() {
+                emit openReferenceInPaneRequested(targetIdx, rawRefLink);
+            });
+        }
+
+        menu.addSeparator();
+        QAction* actNewWin = menu.addAction(
+            SwordEngine::uiTr("➕⬇ Ouvrir « %1 » dans une NOUVELLE fenêtre Bible",
+                              "➕⬇ Open \"%1\" in a NEW Bible window",
+                              "➕⬇ Abrir « %1 » en una NUEVA ventana de Biblia")
+                .arg(refDisplayLabel)
+        );
+        connect(actNewWin, &QAction::triggered, this, [this, rawRefLink]() {
+            emit openReferenceInPaneRequested(-1, rawRefLink);
+        });
+
+        menu.exec(event->globalPos());
+        return;
+    }
 
     // Menu contextuel sur un morceau de texte sélectionné (dans Gemini, Bible, Dictionnaire ou Commentaire)
     if (!sel.isEmpty()) {
@@ -642,19 +833,52 @@ void InteractiveTextBrowser::contextMenuEvent(QContextMenuEvent* event) {
         QString frRef = QString("%1 %2:%3").arg(frBook).arg(m_contextChapter).arg(selVerse);
 
         QMenu menu(this);
-        QAction* actAddNote = menu.addAction(QString("📝 Ajouter la sélection à la note de %1").arg(frRef));
+        menu.setStyleSheet(commonContextMenuStyleSheet());
+
+        if (hasRefLink) {
+            const auto targets = collectAvailablePaneTargets(this);
+            QMenu* refSubMenu = menu.addMenu(
+                SwordEngine::uiTr("🔗 Ouvrir « %1 » dans une fenêtre...",
+                                  "🔗 Open \"%1\" in a window...",
+                                  "🔗 Abrir « %1 » en una ventana...")
+                    .arg(refDisplayLabel)
+            );
+            refSubMenu->setStyleSheet(commonContextMenuStyleSheet());
+            for (const auto& t : targets) {
+                QAction* actPane = refSubMenu->addAction(t.menuLabel);
+                int targetIdx = t.paneIndex;
+                connect(actPane, &QAction::triggered, this, [this, targetIdx, rawRefLink]() {
+                    emit openReferenceInPaneRequested(targetIdx, rawRefLink);
+                });
+            }
+            menu.addSeparator();
+        }
+
+        QAction* actAddNote = menu.addAction(
+            SwordEngine::uiTr("📝 Ajouter la sélection à la note de %1",
+                              "📝 Add selection to personal note for %1",
+                              "📝 Añadir selección a la nota de %1").arg(frRef)
+        );
         connect(actAddNote, &QAction::triggered, this, [sel, selVerse, this]() {
             emit addSelectionToPersonalNoteRequested(selVerse, sel, false);
         });
 
-        QAction* actAddNoteOpen = menu.addAction(QString("📝 Ajouter à la note de %1 et ouvrir la fiche").arg(frRef));
+        QAction* actAddNoteOpen = menu.addAction(
+            SwordEngine::uiTr("📝 Ajouter à la note de %1 et ouvrir la fiche",
+                              "📝 Add to note for %1 and open note editor",
+                              "📝 Añadir a la nota de %1 y abrir la ficha").arg(frRef)
+        );
         connect(actAddNoteOpen, &QAction::triggered, this, [sel, selVerse, this]() {
             emit addSelectionToPersonalNoteRequested(selVerse, sel, true);
         });
 
         menu.addSeparator();
 
-        QAction* actPrepAi = menu.addAction("🤖 Rechercher dans l'IA (mettre la sélection et poser ma question)");
+        QAction* actPrepAi = menu.addAction(
+            SwordEngine::uiTr("🤖 Rechercher dans l'IA (mettre la sélection et poser ma question)",
+                              "🤖 Send to AI (prepare selection and ask my question)",
+                              "🤖 Buscar en la IA (preparar selección y hacer mi pregunta)")
+        );
         connect(actPrepAi, &QAction::triggered, this, [sel, selVerse, this]() {
             if (m_isBibleView) {
                 emit selectionAiPreparedRequested(selVerse, sel, false);
@@ -663,7 +887,11 @@ void InteractiveTextBrowser::contextMenuEvent(QContextMenuEvent* event) {
             }
         });
 
-        QAction* actAutoAi = menu.addAction("⚡ Rechercher dans l'IA (analyse immédiate de la sélection)");
+        QAction* actAutoAi = menu.addAction(
+            SwordEngine::uiTr("⚡ Rechercher dans l'IA (analyse immédiate de la sélection)",
+                              "⚡ Analyze in AI immediately",
+                              "⚡ Analizar en la IA inmediatamente")
+        );
         connect(actAutoAi, &QAction::triggered, this, [sel, selVerse, this]() {
             if (m_isBibleView) {
                 emit selectionAiPreparedRequested(selVerse, sel, true);
@@ -673,20 +901,36 @@ void InteractiveTextBrowser::contextMenuEvent(QContextMenuEvent* event) {
         });
 
         menu.addSeparator();
-        QAction* actCopyWord = menu.addAction("📋 Copier la sélection pour Traitement de texte (LibreOffice / Word)");
+        QAction* actCopyWord = menu.addAction(
+            SwordEngine::uiTr("📋 Copier la sélection pour Traitement de texte (LibreOffice / Word)",
+                              "📋 Copy selection for Word Processor (LibreOffice / Word)",
+                              "📋 Copiar selección para Procesador de textos (LibreOffice / Word)")
+        );
         connect(actCopyWord, &QAction::triggered, this, [sel, frRef, this]() {
             auto* mime = new QMimeData();
             mime->setText(sel);
             QString title = m_contextModule.isEmpty() ? frRef : QString("%1 — %2").arg(frRef, m_contextModule);
             mime->setHtml(GeminiClient::markdownToWordProcessorHtml(sel, title));
             QApplication::clipboard()->setMimeData(mime);
-            emit statusNotification("📋 Sélection copiée (format riche propre sans fond noir) — prête à coller (Ctrl+V) dans votre traitement de texte !");
+            emit statusNotification(
+                SwordEngine::uiTr("📋 Sélection copiée (format riche propre sans fond noir) — prête à coller (Ctrl+V) !",
+                                  "📋 Selection copied (clean rich format on white background) — ready to paste (Ctrl+V)!",
+                                  "📋 Selección copiada (formato rico limpio sin fondo negro) — ¡lista para pegar (Ctrl+V)!")
+            );
         });
 
-        QAction* actCopy = menu.addAction("📋 Copier en texte brut (Ctrl+C)");
+        QAction* actCopy = menu.addAction(
+            SwordEngine::uiTr("📋 Copier en texte brut (Ctrl+C)",
+                              "📋 Copy plain text (Ctrl+C)",
+                              "📋 Copiar texto sin formato (Ctrl+C)")
+        );
         connect(actCopy, &QAction::triggered, this, [sel, this]() {
             QApplication::clipboard()->setText(sel);
-            emit statusNotification("✓ Texte sélectionné copié dans le presse-papiers.");
+            emit statusNotification(
+                SwordEngine::uiTr("✓ Texte sélectionné copié dans le presse-papiers.",
+                                  "✓ Selected text copied to clipboard.",
+                                  "✓ Texto seleccionado copiado al portapapeles.")
+            );
         });
 
         menu.exec(event->globalPos());
@@ -695,10 +939,17 @@ void InteractiveTextBrowser::contextMenuEvent(QContextMenuEvent* event) {
 
     // Sans texte sélectionné : AUCUNE recherche IA automatique sur un mot !
     QMenu menu(this);
-    QAction* hintAct = menu.addAction("💡 Sélectionnez du texte à la souris pour « 📝 Ajouter à la note » ou « 🤖 Rechercher dans l'IA »");
+    menu.setStyleSheet(commonContextMenuStyleSheet());
+    QAction* hintAct = menu.addAction(
+        SwordEngine::uiTr("💡 Sélectionnez du texte à la souris pour « 📝 Ajouter à la note » ou « 🤖 Rechercher dans l'IA »",
+                          "💡 Select text with the mouse to \"📝 Add to note\" or \"🤖 Search in AI\" (or right-click a TSK link)",
+                          "💡 Seleccione texto con el ratón para « 📝 Añadir a la nota » o « 🤖 Buscar en la IA »")
+    );
     hintAct->setEnabled(false);
     menu.addSeparator();
-    QAction* actAll = menu.addAction("Tout sélectionner (Ctrl+A)");
+    QAction* actAll = menu.addAction(
+        SwordEngine::uiTr("Tout sélectionner (Ctrl+A)", "Select All (Ctrl+A)", "Seleccionar todo (Ctrl+A)")
+    );
     connect(actAll, &QAction::triggered, this, &QTextBrowser::selectAll);
     menu.exec(event->globalPos());
 }
@@ -735,8 +986,11 @@ LeftScreenWidget::LeftScreenWidget(SwordEngine* engine, QWidget* parent)
     connect(m_chapterSpin, QOverload<int>::of(&QSpinBox::valueChanged), this, &LeftScreenWidget::onChapterSpinChanged);
     connect(m_verseSpin, QOverload<int>::of(&QSpinBox::valueChanged), this, &LeftScreenWidget::onVerseSpinChanged);
 
-
-    auto* gearBtn = createGearButton("⚙ Réglages de l'Arbre des Documents (taille des lettres, contraste, couleurs)");
+    auto* gearBtn = createGearButton(
+        SwordEngine::uiTr("⚙ Réglages de la Bibliothèque (taille des lettres, contraste, couleurs)",
+                          "⚙ Library Settings (font size, contrast, colors)",
+                          "⚙ Ajustes de la Biblioteca (tamaño de letra, contraste, colores)")
+    );
     connect(gearBtn, &QToolButton::clicked, this, &LeftScreenWidget::onOpenGearSettings);
 
     topRow->addWidget(m_bookCombo, 1);
@@ -745,7 +999,7 @@ LeftScreenWidget::LeftScreenWidget(SwordEngine* engine, QWidget* parent)
     topRow->addWidget(gearBtn);
     rootLayout->addLayout(topRow);
 
-    // Onglets légers : Documents | Recherche
+    // Onglets légers : Documents | Recherche (dans la langue du système)
     auto* leftTabs = new QTabWidget();
 
     // --- ONGLET 1 : ARBRE DES DOCUMENTS ---
@@ -754,11 +1008,21 @@ LeftScreenWidget::LeftScreenWidget(SwordEngine* engine, QWidget* parent)
     treeLayout->setContentsMargins(4, 4, 4, 4);
     treeLayout->setSpacing(4);
 
-    auto* installModulesBtn = new QPushButton("📥 Télécharger / Gérer des Modules");
+    auto* installModulesBtn = new QPushButton(
+        SwordEngine::uiTr("📥 Télécharger / Gérer des Modules",
+                          "📥 Download / Manage Modules",
+                          "📥 Descargar / Gestionar Módulos")
+    );
     installModulesBtn->setCursor(Qt::PointingHandCursor);
     installModulesBtn->setToolTip(
-        "Ouvrir le gestionnaire de téléchargement de modules (Bibles, Commentaires, Dictionnaires Strong)\n"
-        "depuis CrossWire, eBible.org, STEP Bible, Xiphos, Bible.org... dans toutes les langues !"
+        SwordEngine::uiTr(
+            "Ouvrir le gestionnaire de téléchargement de modules (Bibles, Commentaires, Dictionnaires Strong)\n"
+            "depuis CrossWire, eBible.org, STEP Bible, Xiphos, Bible.org... dans toutes les langues !",
+            "Open the module download manager (Bibles, Commentaries, Strong's Dictionaries)\n"
+            "from CrossWire, eBible.org, STEP Bible, Xiphos, Bible.org... in all languages!",
+            "Abrir el gestor de descarga de módulos (Biblias, Comentarios, Diccionarios Strong)\n"
+            "desde CrossWire, eBible.org, STEP Bible, Xiphos, Bible.org... ¡en todos los idiomas!"
+        )
     );
     installModulesBtn->setStyleSheet(
         "QPushButton { background-color: rgba(2, 132, 199, 0.24); color: #38BDF8; "
@@ -769,14 +1033,21 @@ LeftScreenWidget::LeftScreenWidget(SwordEngine* engine, QWidget* parent)
     treeLayout->addWidget(installModulesBtn);
 
     m_treeFilterEdit = new QLineEdit();
-    m_treeFilterEdit->setPlaceholderText("🔍 Filtrer les documents (ou taper ex: Jean 3:16 + Entrée)...");
+    m_treeFilterEdit->setPlaceholderText(
+        SwordEngine::uiTr("🔍 Filtrer les documents (ou ex: Jean 3:16 + Entrée)...",
+                          "🔍 Filter documents (or type e.g. John 3:16 + Enter)...",
+                          "🔍 Filtrar documentos (o ej: Juan 3:16 + Intro)...")
+    );
     m_treeFilterEdit->setClearButtonEnabled(true);
     connect(m_treeFilterEdit, &QLineEdit::textChanged, this, &LeftScreenWidget::onTreeFilterChanged);
     connect(m_treeFilterEdit, &QLineEdit::returnPressed, this, &LeftScreenWidget::onQuickRefSubmitted);
     treeLayout->addWidget(m_treeFilterEdit);
 
     m_docTree = new QTreeWidget();
-    m_docTree->setHeaderLabels({"Module", "Description"});
+    m_docTree->setHeaderLabels({
+        SwordEngine::uiTr("Module", "Module", "Módulo"),
+        SwordEngine::uiTr("Description", "Description", "Descripción")
+    });
     m_docTree->header()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
     m_docTree->header()->setSectionResizeMode(1, QHeaderView::Stretch);
     m_docTree->setContextMenuPolicy(Qt::CustomContextMenu);
@@ -784,7 +1055,7 @@ LeftScreenWidget::LeftScreenWidget(SwordEngine* engine, QWidget* parent)
     connect(m_docTree, &QTreeWidget::customContextMenuRequested, this, &LeftScreenWidget::onDocumentTreeContextMenu);
 
     treeLayout->addWidget(m_docTree, 1);
-    leftTabs->addTab(treeTab, "🌳 Documents");
+    leftTabs->addTab(treeTab, SwordEngine::uiTr("🌳 Documents", "🌳 Documents", "🌳 Documentos"));
 
     // --- ONGLET 2 : RECHERCHE ---
     auto* searchTab = new QWidget();
@@ -794,8 +1065,12 @@ LeftScreenWidget::LeftScreenWidget(SwordEngine* engine, QWidget* parent)
 
     auto* sRow = new QHBoxLayout();
     m_searchInput = new QLineEdit();
-    m_searchInput->setPlaceholderText("Mot ou Strong (ex: grâce, G3056)...");
-    auto* sBtn = new QPushButton("Chercher");
+    m_searchInput->setPlaceholderText(
+        SwordEngine::uiTr("Mot ou Strong (ex: grâce, G3056)...",
+                          "Word or Strong's (e.g. grace, G3056)...",
+                          "Palabra o Strong (ej: gracia, G3056)...")
+    );
+    auto* sBtn = new QPushButton(SwordEngine::uiTr("Chercher", "Search", "Buscar"));
     connect(m_searchInput, &QLineEdit::returnPressed, this, &LeftScreenWidget::onSearchExecuted);
     connect(sBtn, &QPushButton::clicked, this, &LeftScreenWidget::onSearchExecuted);
     sRow->addWidget(m_searchInput, 1);
@@ -805,14 +1080,23 @@ LeftScreenWidget::LeftScreenWidget(SwordEngine* engine, QWidget* parent)
     m_searchBibleCombo = new QComboBox();
     searchLayout->addWidget(m_searchBibleCombo);
 
-    m_searchStatusLabel = new QLabel();
+    m_searchStatusLabel = new QLabel(
+        SwordEngine::uiTr("💡 Clic / Double-clic : fenêtre par défaut • Clic droit : choisir la fenêtre (1, 2, 3, 4...)",
+                          "💡 Click / Double-click: default window • Right-click: choose window (1, 2, 3, 4...)",
+                          "💡 Clic / Doble clic: ventana por defecto • Clic derecho: elegir ventana (1, 2, 3, 4...)")
+    );
+    m_searchStatusLabel->setWordWrap(true);
+    m_searchStatusLabel->setStyleSheet("color: #94A3B8; font-size: 8.6pt;");
     searchLayout->addWidget(m_searchStatusLabel);
 
     m_searchResultsList = new QListWidget();
+    m_searchResultsList->setContextMenuPolicy(Qt::CustomContextMenu);
     connect(m_searchResultsList, &QListWidget::itemClicked, this, &LeftScreenWidget::onSearchResultClicked);
+    connect(m_searchResultsList, &QListWidget::itemDoubleClicked, this, &LeftScreenWidget::onSearchResultClicked);
+    connect(m_searchResultsList, &QListWidget::customContextMenuRequested, this, &LeftScreenWidget::onSearchResultContextMenu);
     searchLayout->addWidget(m_searchResultsList, 1);
 
-    leftTabs->addTab(searchTab, "🔍 Recherche");
+    leftTabs->addTab(searchTab, SwordEngine::uiTr("🔍 Recherche", "🔍 Search", "🔍 Buscar"));
 
     rootLayout->addWidget(leftTabs, 1);
 
@@ -841,20 +1125,24 @@ void LeftScreenWidget::applyStyleToWidgets() {
 }
 
 void LeftScreenWidget::onOpenGearSettings() {
-    auto* extraBox = new QGroupBox("Option d'ouverture des Bibles depuis l'arbre");
+    auto* extraBox = new QGroupBox(
+        SwordEngine::uiTr("Option d'ouverture des Bibles depuis l'arbre",
+                          "Default window when clicking a Bible in the tree",
+                          "Ventana por defecto al hacer clic en una Biblia")
+    );
     auto* extraLayout = new QFormLayout(extraBox);
     auto* colCombo = new QComboBox();
-    colCombo->addItem("Ouvrir dans la Colonne 1 (Gauche)", 0);
-    colCombo->addItem("Ouvrir dans la Colonne 2 (Droite)", 1);
+    colCombo->addItem(SwordEngine::uiTr("Ouvrir dans la Fenêtre 1 (Gauche)", "Open in Window 1 (Left)", "Abrir en Ventana 1 (Izquierda)"), 0);
+    colCombo->addItem(SwordEngine::uiTr("Ouvrir dans la Fenêtre 2 (Droite)", "Open in Window 2 (Right)", "Abrir en Ventana 2 (Derecha)"), 1);
     colCombo->setCurrentIndex(m_defaultTargetCol);
     connect(colCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), extraBox, [this, colCombo](int idx) {
         m_defaultTargetCol = colCombo->itemData(idx).toInt();
     });
-    extraLayout->addRow("Clic gauche sur une Bible :", colCombo);
+    extraLayout->addRow(SwordEngine::uiTr("Clic gauche sur une Bible :", "Left-click on a Bible:", "Clic izquierdo en una Biblia:"), colCombo);
 
     openModuleSettingsDialog(
         this,
-        "Arbre des Documents (Écran Gauche)",
+        SwordEngine::uiTr("Bibliothèque (Panneau Gauche)", "Library (Left Panel)", "Biblioteca (Panel Izquierdo)"),
         m_style,
         [this](const PaneStyle& s) {
             setPaneStyle(s);
@@ -871,7 +1159,7 @@ void LeftScreenWidget::populateBookCombo() {
     m_updating = true;
     m_bookCombo->clear();
     for (const auto& b : m_engine->getBooks()) {
-        m_bookCombo->addItem(b.frenchName, b.swordName);
+        m_bookCombo->addItem(SwordEngine::localizedBookName(b), b.swordName);
     }
     m_updating = false;
 }
@@ -889,33 +1177,74 @@ void LeftScreenWidget::populateDocumentTree() {
         return item;
     };
 
-    makeCat("📝 Mes Notes Personnelles");
-    QTreeWidgetItem* catBiblesFr = makeCat("🇫🇷 Bibles — Français");
-    QTreeWidgetItem* catBiblesEn = makeCat("🇬🇧 Bibles — Anglais");
-    QTreeWidgetItem* catBiblesEs = makeCat("🇪🇸 Bibles — Espagnol");
-    QTreeWidgetItem* catBiblesOrig = makeCat("🏛️ Bibles — Grec / Hébreu / Autres");
+    makeCat(SwordEngine::uiTr("📝 Mes Notes Personnelles", "📝 My Personal Notes", "📝 Mis Notas Personales"));
+
+    QString biblesWord = SwordEngine::uiTr("Bibles", "Bibles", "Biblias");
+
+    // Créer dynamiquement une catégorie par langue moderne installée pour les Bibles
+    QMap<QString, QTreeWidgetItem*> catByLang;
+    const QStringList studyLangs = m_engine->getInstalledStudyLanguages();
+    for (const QString& lang : studyLangs) {
+        bool hasBibleInLang = false;
+        for (const auto& b : m_engine->getBibleModules()) {
+            if (b.language.trimmed().toLower().section('-', 0, 0).section('_', 0, 0) == lang) {
+                hasBibleInLang = true;
+                break;
+            }
+        }
+        if (hasBibleInLang) {
+            catByLang[lang] = makeCat(QString("%1 %2 — %3")
+                .arg(SwordEngine::languageFlag(lang), biblesWord, SwordEngine::languageNativeName(lang)));
+        }
+    }
+    QTreeWidgetItem* catBiblesOrig = makeCat(
+        SwordEngine::uiTr("🏛️ Bibles — Grec / Hébreu / Ancien",
+                          "🏛️ Bibles — Greek / Hebrew / Ancient",
+                          "🏛️ Biblias — Griego / Hebreo / Antiguo")
+    );
     catBiblesOrig->setExpanded(false);
 
-    QTreeWidgetItem* catCommentaries = makeCat("📚 Commentaires");
-    QTreeWidgetItem* catDictionaries = makeCat("📖 Dictionnaires");
+    QTreeWidgetItem* catCommentaries = makeCat(
+        SwordEngine::uiTr("📚 Commentaires & TSK", "📚 Commentaries & TSK", "📚 Comentarios y TSK")
+    );
+    QTreeWidgetItem* catDictionaries = makeCat(
+        SwordEngine::uiTr("📖 Dictionnaires & Lexiques", "📖 Dictionaries & Lexicons", "📖 Diccionarios y Léxicos")
+    );
 
     for (const auto& b : m_engine->getBibleModules()) {
-        m_searchBibleCombo->addItem(QString("%1 — %2").arg(b.name, b.description), b.name);
+        m_searchBibleCombo->addItem(QString("%1 %2 — %3")
+            .arg(SwordEngine::languageFlag(b.language), b.name, b.description), b.name);
 
-        QTreeWidgetItem* parentCat = catBiblesOrig;
-        if (b.language == "fr") parentCat = catBiblesFr;
-        else if (b.language == "en") parentCat = catBiblesEn;
-        else if (b.language == "es") parentCat = catBiblesEs;
+        QString normLang = b.language.trimmed().toLower().section('-', 0, 0).section('_', 0, 0);
+        QTreeWidgetItem* parentCat = catByLang.value(normLang, nullptr);
+        if (!parentCat) {
+            if (!SwordEngine::isAncientBiblicalLanguage(normLang) && !normLang.isEmpty()) {
+                parentCat = makeCat(QString("%1 %2 — %3")
+                    .arg(SwordEngine::languageFlag(normLang), biblesWord, SwordEngine::languageNativeName(normLang)));
+                catByLang[normLang] = parentCat;
+            } else {
+                parentCat = catBiblesOrig;
+            }
+        }
 
         auto* item = new QTreeWidgetItem(parentCat, {b.name, b.description});
         item->setData(0, Qt::UserRole, "BIBLE");
         item->setData(0, Qt::UserRole + 1, b.name);
-        item->setToolTip(0, QString("%1 — %2\n(Clic droit = choisir dans quelle fenêtre l'ouvrir)").arg(b.name, b.description));
+        item->setToolTip(0, QString("%1 — %2 [%3]\n%4")
+            .arg(b.name, b.description, SwordEngine::languageFlagAndName(b.language),
+                 SwordEngine::uiTr("(Clic droit = choisir dans quelle fenêtre l'ouvrir)",
+                                   "(Right-click = choose which window to open in)",
+                                   "(Clic derecho = elegir en qué ventana abrirlo)")));
         item->setToolTip(1, item->toolTip(0));
     }
 
     {
-        auto* allFr = new QTreeWidgetItem(catCommentaries, {"★ Tous FR + TSK", "Tous les Commentaires Français + TSK"});
+        auto* allFr = new QTreeWidgetItem(catCommentaries, {
+            SwordEngine::uiTr("★ Tous + TSK", "★ All + TSK", "★ Todos + TSK"),
+            SwordEngine::uiTr("Tous les Commentaires + Références parallèles TSK",
+                              "All Commentaries + TSK Cross-References",
+                              "Todos los Comentarios + Referencias paralelas TSK")
+        });
         allFr->setData(0, Qt::UserRole, "COMMENTARY");
         allFr->setData(0, Qt::UserRole + 1, "ALL_FR");
         QFont f = allFr->font(0);
@@ -923,14 +1252,19 @@ void LeftScreenWidget::populateDocumentTree() {
         allFr->setFont(0, f);
     }
     for (const auto& cm : m_engine->getCommentaryModules()) {
-        QString prefix = (cm.language == "fr") ? "🇫🇷 " : (cm.language == "en" ? "🇬🇧 " : "");
+        QString prefix = SwordEngine::languageFlag(cm.language) + " ";
         auto* item = new QTreeWidgetItem(catCommentaries, {prefix + cm.name, cm.description});
         item->setData(0, Qt::UserRole, "COMMENTARY");
         item->setData(0, Qt::UserRole + 1, cm.name);
     }
 
     {
-        auto* autoDict = new QTreeWidgetItem(catDictionaries, {"★ Grec/Hébreu Auto", "Dictionnaire Strong Grec (NT) & Hébreu (AT)"});
+        auto* autoDict = new QTreeWidgetItem(catDictionaries, {
+            SwordEngine::uiTr("★ Grec/Hébreu Auto", "★ Greek/Hebrew Auto", "★ Griego/Hebreo Auto"),
+            SwordEngine::uiTr("Dictionnaire Strong Grec (NT) & Hébreu (AT)",
+                              "Strong's Greek (NT) & Hebrew (OT) Dictionary",
+                              "Diccionario Strong Griego (NT) y Hebreo (AT)")
+        });
         autoDict->setData(0, Qt::UserRole, "DICTIONARY");
         autoDict->setData(0, Qt::UserRole + 1, "AUTO_STRONG");
         QFont f = autoDict->font(0);
@@ -938,7 +1272,7 @@ void LeftScreenWidget::populateDocumentTree() {
         autoDict->setFont(0, f);
     }
     for (const auto& lx : m_engine->getLexiconModules()) {
-        QString prefix = (lx.language == "fr") ? "🇫🇷 " : "";
+        QString prefix = SwordEngine::languageFlag(lx.language) + " ";
         auto* item = new QTreeWidgetItem(catDictionaries, {prefix + lx.name, lx.description});
         item->setData(0, Qt::UserRole, "DICTIONARY");
         item->setData(0, Qt::UserRole + 1, lx.name);
@@ -956,7 +1290,10 @@ void LeftScreenWidget::refreshPersonalNotesTree() {
         delete catNotes->takeChild(0);
     }
 
-    auto* openEditorItem = new QTreeWidgetItem(catNotes, {"★ Fiche du verset actif", "Ouvrir l'éditeur de Notes Personnelles"});
+    auto* openEditorItem = new QTreeWidgetItem(catNotes, {
+        SwordEngine::uiTr("★ Fiche du verset actif", "★ Active Verse Note", "★ Nota del versículo activo"),
+        SwordEngine::uiTr("Ouvrir l'éditeur de Notes Personnelles", "Open Personal Notes Editor", "Abrir el editor de Notas Personales")
+    });
     openEditorItem->setData(0, Qt::UserRole, "NOTE");
     openEditorItem->setData(0, Qt::UserRole + 1, "CURRENT");
     QFont bf = openEditorItem->font(0);
@@ -964,13 +1301,20 @@ void LeftScreenWidget::refreshPersonalNotesTree() {
     openEditorItem->setFont(0, bf);
 
     const auto notes = m_engine->getAllPersonalNotes();
-    catNotes->setText(0, QString("📝 Mes Notes Personnelles (%1)").arg(notes.size()));
+    catNotes->setText(0, QString("%1 (%2)").arg(
+        SwordEngine::uiTr("📝 Mes Notes Personnelles", "📝 My Personal Notes", "📝 Mis Notas Personales")
+    ).arg(notes.size()));
     for (const auto& n : notes) {
-        QString sub = QString("%1 extrait(s) — %2").arg(n.excerptCount).arg(n.updatedAt);
+        QString sub = SwordEngine::uiTr("%1 extrait(s) — %2", "%1 excerpt(s) — %2", "%1 extracto(s) — %2")
+            .arg(n.excerptCount).arg(n.updatedAt);
         auto* item = new QTreeWidgetItem(catNotes, {"📌 " + n.frenchRef, sub});
         item->setData(0, Qt::UserRole, "NOTE");
         item->setData(0, Qt::UserRole + 1, n.swordKey);
-        item->setToolTip(0, QString("Note personnelle sur %1 (%2)\nCliquez pour ouvrir ce verset et sa fiche d'étude.").arg(n.frenchRef, sub));
+        item->setToolTip(0, SwordEngine::uiTr(
+            "Note personnelle sur %1 (%2)\nClic gauche = ouvrir | Clic droit = choisir la fenêtre.",
+            "Personal note on %1 (%2)\nLeft-click = open | Right-click = choose window.",
+            "Nota personal sobre %1 (%2)\nClic izquierdo = abrir | Clic derecho = elegir ventana."
+        ).arg(n.frenchRef, sub));
         item->setToolTip(1, item->toolTip(0));
     }
 }
@@ -1010,13 +1354,19 @@ void LeftScreenWidget::onDocumentTreeClicked(QTreeWidgetItem* item, int) {
 
     if (kind == "BIBLE") {
         emit bibleSelectedForColumn(m_defaultTargetCol, modName);
-        emit statusNotification(QString("📖 Bible « %1 » ouverte.").arg(modName));
+        emit statusNotification(
+            SwordEngine::uiTr("📖 Bible « %1 » ouverte.", "📖 Bible \"%1\" opened.", "📖 Biblia « %1 » abierta.").arg(modName)
+        );
     } else if (kind == "COMMENTARY") {
         emit commentarySelected(modName);
-        emit statusNotification(QString("📚 Commentaire « %1 » ouvert.").arg(modName));
+        emit statusNotification(
+            SwordEngine::uiTr("📚 Commentaire « %1 » ouvert.", "📚 Commentary \"%1\" opened.", "📚 Comentario « %1 » abierto.").arg(modName)
+        );
     } else if (kind == "DICTIONARY") {
         emit dictionarySelected(modName);
-        emit statusNotification(QString("🏛️ Dictionnaire « %1 » ouvert.").arg(modName));
+        emit statusNotification(
+            SwordEngine::uiTr("🏛️ Dictionnaire « %1 » ouvert.", "🏛️ Dictionary \"%1\" opened.", "🏛️ Diccionario « %1 » abierto.").arg(modName)
+        );
     } else if (kind == "NOTE") {
         QString key = (modName == "CURRENT")
             ? QString("%1 %2:%3").arg(m_currentBook).arg(m_currentChapter).arg(m_currentVerse)
@@ -1034,17 +1384,22 @@ void LeftScreenWidget::onDocumentTreeContextMenu(const QPoint& pos) {
 
     QString icon = (kind == "BIBLE") ? "📖" : (kind == "COMMENTARY" ? "📚" : (kind == "NOTE" ? "📝" : "🏛️"));
     QString label = (kind == "NOTE")
-        ? ((modName == "CURRENT") ? "Notes Personnelles" : m_engine->toFrenchReference(modName))
+        ? ((modName == "CURRENT")
+            ? SwordEngine::uiTr("Notes Personnelles", "Personal Notes", "Notas Personales")
+            : m_engine->toFrenchReference(modName))
         : modName;
+
     QMenu menu(this);
-    const QStringList paneTitles = {
-        "1️⃣ Fenêtre 1 (Centre - Gauche)",
-        "2️⃣ Fenêtre 2 (Centre - Droite)",
-        "3️⃣ Fenêtre 3 (Droite - Gauche)",
-        "4️⃣ Fenêtre 4 (Droite - Droite)"
-    };
-    for (int p = 0; p < 4; ++p) {
-        QAction* act = menu.addAction(QString("%1 Ouvrir « %2 » dans %3").arg(icon, label, paneTitles[p]));
+    menu.setStyleSheet(commonContextMenuStyleSheet());
+    const auto targets = collectAvailablePaneTargets(this);
+    for (const auto& t : targets) {
+        int p = t.paneIndex;
+        QAction* act = menu.addAction(
+            SwordEngine::uiTr("%1 Ouvrir « %2 » dans %3",
+                              "%1 Open \"%2\" in %3",
+                              "%1 Abrir « %2 » en %3")
+                .arg(icon, label, t.menuLabel)
+        );
         connect(act, &QAction::triggered, this, [this, p, kind, modName]() {
             if (kind == "BIBLE" && p < 2) {
                 m_defaultTargetCol = p;
@@ -1107,7 +1462,7 @@ void LeftScreenWidget::onSearchExecuted() {
     QString bibleMod = m_searchBibleCombo->currentData().toString();
     if (bibleMod.isEmpty()) bibleMod = "FreLSG";
 
-    m_searchStatusLabel->setText("⏳ Recherche...");
+    m_searchStatusLabel->setText(SwordEngine::uiTr("⏳ Recherche en cours...", "⏳ Searching...", "⏳ Buscando..."));
     QApplication::processEvents();
 
     auto hits = m_engine->searchBible(bibleMod, q, 0, m_currentBook, 200);
@@ -1115,10 +1470,26 @@ void LeftScreenWidget::onSearchExecuted() {
     for (const auto& h : hits) {
         auto* item = new QListWidgetItem(QString("%1 — %2").arg(h.frenchRef, h.plainText.left(100)));
         item->setData(Qt::UserRole, h.swordKey);
-        item->setToolTip(h.plainText);
+        item->setData(Qt::UserRole + 1, bibleMod);
+        item->setData(Qt::UserRole + 2, h.frenchRef);
+        item->setToolTip(
+            QString("%1 (%2)\n%3\n\n%4").arg(
+                h.frenchRef,
+                bibleMod,
+                h.plainText,
+                SwordEngine::uiTr("• Clic gauche / Double-clic : ouvrir dans la fenêtre par défaut\n• Clic droit : choisir dans quelle fenêtre ouvrir (Fenêtre 1, 2, 3, 4...)",
+                                  "• Left-click / Double-click: open in default window\n• Right-click: choose which window to open in (Window 1, 2, 3, 4...)",
+                                  "• Clic izquierdo / Doble clic: abrir en ventana por defecto\n• Clic derecho: elegir en qué ventana abrir (Ventana 1, 2, 3, 4...)")
+            )
+        );
         m_searchResultsList->addItem(item);
     }
-    m_searchStatusLabel->setText(QString("✓ %1 résultats.").arg(hits.size()));
+    m_searchStatusLabel->setText(
+        SwordEngine::uiTr("✓ %1 résultats — Clic droit sur un verset pour choisir la fenêtre (1, 2, 3, 4...).",
+                          "✓ %1 results — Right-click any verse to choose the target window (1, 2, 3, 4...).",
+                          "✓ %1 resultados — Clic derecho en un versículo para elegir la ventana (1, 2, 3, 4...).")
+            .arg(hits.size())
+    );
 }
 
 void LeftScreenWidget::onSearchResultClicked(QListWidgetItem* item) {
@@ -1127,6 +1498,67 @@ void LeftScreenWidget::onSearchResultClicked(QListWidgetItem* item) {
     QString b; int c = 1, v = 1;
     m_engine->splitSwordKey(key, b, c, v);
     emit referenceSelected(b, c, v);
+}
+
+void LeftScreenWidget::onSearchResultContextMenu(const QPoint& pos) {
+    QListWidgetItem* item = m_searchResultsList->itemAt(pos);
+    if (!item) return;
+
+    QString swordKey = item->data(Qt::UserRole).toString();
+    QString bibleMod = item->data(Qt::UserRole + 1).toString();
+    QString refLabel = item->data(Qt::UserRole + 2).toString();
+    if (refLabel.isEmpty()) refLabel = m_engine->toFrenchReference(swordKey);
+
+    QMenu menu(this);
+    menu.setStyleSheet(commonContextMenuStyleSheet());
+
+    QAction* headerAct = menu.addAction(
+        SwordEngine::uiTr("🔍 Résultat « %1 » — Choisir la fenêtre :",
+                          "🔍 Search Result \"%1\" — Choose window:",
+                          "🔍 Resultado « %1 » — Elegir ventana:")
+            .arg(refLabel)
+    );
+    headerAct->setEnabled(false);
+    menu.addSeparator();
+
+    QAction* actDefault = menu.addAction(
+        SwordEngine::uiTr("⭐ Ouvrir « %1 » dans la fenêtre par défaut (Double-clic)",
+                          "⭐ Open \"%1\" in default working window (Double-click)",
+                          "⭐ Abrir « %1 » en la ventana por defecto (Doble clic)")
+            .arg(refLabel)
+    );
+    connect(actDefault, &QAction::triggered, this, [this, item]() {
+        onSearchResultClicked(item);
+    });
+
+    menu.addSeparator();
+
+    const auto targets = collectAvailablePaneTargets(this);
+    for (const auto& t : targets) {
+        int targetIdx = t.paneIndex;
+        QAction* actPane = menu.addAction(
+            SwordEngine::uiTr("📖 Ouvrir « %1 » dans %2",
+                              "📖 Open \"%1\" in %2",
+                              "📖 Abrir « %1 » en %2")
+                .arg(refLabel, t.menuLabel)
+        );
+        connect(actPane, &QAction::triggered, this, [this, targetIdx, swordKey, bibleMod]() {
+            emit openReferenceInPaneRequested(targetIdx, swordKey, bibleMod);
+        });
+    }
+
+    menu.addSeparator();
+    QAction* actNewWin = menu.addAction(
+        SwordEngine::uiTr("➕⬇ Ouvrir « %1 » dans une NOUVELLE fenêtre Bible",
+                          "➕⬇ Open \"%1\" in a NEW Bible window",
+                          "➕⬇ Abrir « %1 » en una NUEVA ventana de Biblia")
+            .arg(refLabel)
+    );
+    connect(actNewWin, &QAction::triggered, this, [this, swordKey, bibleMod]() {
+        emit openReferenceInPaneRequested(-1, swordKey, bibleMod);
+    });
+
+    menu.exec(m_searchResultsList->viewport()->mapToGlobal(pos));
 }
 
 // ============================================================================
@@ -1154,18 +1586,32 @@ UniversalPaneWidget::UniversalPaneWidget(int paneIndex, SwordEngine* engine, Gem
     m_typeCombo = new QComboBox();
     m_typeCombo->setCursor(Qt::PointingHandCursor);
     m_typeCombo->setToolTip(
-        QString("Choisir ce qu'affiche la Fenêtre %1 :\n"
-                "• 📖 Bible (Français, Anglais, Espagnol, Grec, Hébreu)\n"
-                "• 📚 Commentaires & TSK (synchronisé ou indépendant)\n"
-                "• 🏛️ Dictionnaire Grec / Hébreu (Strong Auto ou lexique)\n"
-                "• 🤖 IA Gemini & Sources (Chat Gemini ou Recherche dans les Sources)\n"
-                "• 📝 Notes Personnelles (fiches d'étude indexées par verset + extraits IA)").arg(paneIndex + 1)
+        SwordEngine::uiTr(
+            "Choisir ce qu'affiche la Fenêtre %1 :\n"
+            "• 📖 Bible (Français, Anglais, Espagnol, Grec, Hébreu...)\n"
+            "• 📚 Commentaires & TSK (synchronisé ou indépendant)\n"
+            "• 🏛️ Dictionnaire Grec / Hébreu (Strong Auto ou lexique)\n"
+            "• 🤖 IA Gemini & Sources (Chat Gemini ou Recherche dans les Sources)\n"
+            "• 📝 Notes Personnelles (fiches d'étude indexées par verset + extraits IA)",
+            "Choose what Window %1 displays:\n"
+            "• 📖 Bible (French, English, Spanish, Greek, Hebrew...)\n"
+            "• 📚 Commentaries & TSK (linked or independent)\n"
+            "• 🏛️ Greek / Hebrew Dictionary (Strong's Auto or lexicon)\n"
+            "• 🤖 Gemini AI & Sources (Gemini Chat or Local Sources Search)\n"
+            "• 📝 Personal Notes (study notes indexed by verse + AI excerpts)",
+            "Elegir qué muestra la Ventana %1:\n"
+            "• 📖 Biblia (Francés, Inglés, Español, Griego, Hebreo...)\n"
+            "• 📚 Comentarios y TSK (vinculado o independiente)\n"
+            "• 🏛️ Diccionario Griego / Hebreo (Strong Auto o léxico)\n"
+            "• 🤖 IA Gemini y Fuentes (Chat Gemini o Fuentes Locales)\n"
+            "• 📝 Notas Personales (fichas de estudio por versículo + extractos IA)"
+        ).arg(paneIndex + 1)
     );
-    m_typeCombo->addItem("📖 Bible", "BIBLE");
-    m_typeCombo->addItem("📚 Commentaires & TSK", "COMMENTARY");
-    m_typeCombo->addItem("🏛️ Dictionnaire", "DICTIONARY");
-    m_typeCombo->addItem("🤖 IA Gemini & Sources", "AI");
-    m_typeCombo->addItem("📝 Notes Personnelles", "NOTES");
+    m_typeCombo->addItem(SwordEngine::uiTr("📖 Bible", "📖 Bible", "📖 Biblia"), "BIBLE");
+    m_typeCombo->addItem(SwordEngine::uiTr("📚 Commentaires & TSK", "📚 Commentaries & TSK", "📚 Comentarios y TSK"), "COMMENTARY");
+    m_typeCombo->addItem(SwordEngine::uiTr("🏛️ Dictionnaire", "🏛️ Dictionary", "🏛️ Diccionario"), "DICTIONARY");
+    m_typeCombo->addItem(SwordEngine::uiTr("🤖 IA Gemini & Sources", "🤖 Gemini AI & Sources", "🤖 IA Gemini y Fuentes"), "AI");
+    m_typeCombo->addItem(SwordEngine::uiTr("📝 Notes Personnelles", "📝 Personal Notes", "📝 Notas Personales"), "NOTES");
     m_typeCombo->setSizeAdjustPolicy(QComboBox::AdjustToContents);
     m_typeCombo->setStyleSheet(
         "QComboBox { font-weight: bold; padding: 3px 8px; border: 1px solid #38BDF8; border-radius: 5px; }"
@@ -1187,22 +1633,16 @@ UniversalPaneWidget::UniversalPaneWidget(int paneIndex, SwordEngine* engine, Gem
         m_bibleCombo->setMaxVisibleItems(25);
         m_bibleCombo->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
         m_bibleCombo->setMinimumContentsLength(8);
-        m_bibleCombo->setToolTip("Choisir la version de Bible affichée dans cette fenêtre");
+        m_bibleCombo->setToolTip(
+            SwordEngine::uiTr("Choisir la version de Bible affichée dans cette fenêtre",
+                              "Choose the Bible version displayed in this window",
+                              "Elegir la versión de la Biblia mostrada en esta ventana")
+        );
 
         const auto bibles = m_engine->getBibleModules();
         for (const auto& b : bibles) {
-            if (b.language == "fr") m_bibleCombo->addItem(QString("🇫🇷 %1 — %2").arg(b.name, b.description), b.name);
-        }
-        for (const auto& b : bibles) {
-            if (b.language == "en") m_bibleCombo->addItem(QString("🇬🇧 %1 — %2").arg(b.name, b.description), b.name);
-        }
-        for (const auto& b : bibles) {
-            if (b.language == "es") m_bibleCombo->addItem(QString("🇪🇸 %1 — %2").arg(b.name, b.description), b.name);
-        }
-        for (const auto& b : bibles) {
-            if (b.language != "fr" && b.language != "en" && b.language != "es") {
-                m_bibleCombo->addItem(QString("🏛️ [%1] %2 — %3").arg(b.language.toUpper(), b.name, b.description), b.name);
-            }
+            QString flag = SwordEngine::languageFlag(b.language);
+            m_bibleCombo->addItem(QString("%1 %2 — %3").arg(flag, b.name, b.description), b.name);
         }
         connect(m_bibleCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int idx) {
             if (m_updatingControls || idx < 0) return;
@@ -1233,11 +1673,18 @@ UniversalPaneWidget::UniversalPaneWidget(int paneIndex, SwordEngine* engine, Gem
         m_commCombo->setMaxVisibleItems(25);
         m_commCombo->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
         m_commCombo->setMinimumContentsLength(8);
-        m_commCombo->setToolTip("Choisir le Commentaire affiché dans cette fenêtre");
-        m_commCombo->addItem("★ Tous les Commentaires Français + TSK", "ALL_FR");
+        m_commCombo->setToolTip(
+            SwordEngine::uiTr("Choisir le Commentaire affiché dans cette fenêtre",
+                              "Choose the Commentary displayed in this window",
+                              "Elegir el Comentario mostrado en esta ventana")
+        );
+        m_commCombo->addItem(
+            SwordEngine::uiTr("★ Tous les Commentaires + TSK", "★ All Commentaries + TSK", "★ Todos los Comentarios + TSK"),
+            "ALL_FR"
+        );
         for (const auto& cm : m_engine->getCommentaryModules()) {
-            QString flag = (cm.language == "fr") ? "🇫🇷 " : (cm.language == "en" ? "🇬🇧 " : "");
-            m_commCombo->addItem(QString("%1%2 — %3").arg(flag, cm.name, cm.description), cm.name);
+            QString flag = SwordEngine::languageFlag(cm.language);
+            m_commCombo->addItem(QString("%1 %2 — %3").arg(flag, cm.name, cm.description), cm.name);
         }
         connect(m_commCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int idx) {
             if (m_updatingControls || idx < 0) return;
@@ -1268,11 +1715,18 @@ UniversalPaneWidget::UniversalPaneWidget(int paneIndex, SwordEngine* engine, Gem
         m_dictCombo->setMaxVisibleItems(25);
         m_dictCombo->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
         m_dictCombo->setMinimumContentsLength(7);
-        m_dictCombo->setToolTip("Choisir le Dictionnaire affiché dans cette fenêtre");
-        m_dictCombo->addItem("★ Grec/Hébreu Strong Auto", "AUTO_STRONG");
+        m_dictCombo->setToolTip(
+            SwordEngine::uiTr("Choisir le Dictionnaire affiché dans cette fenêtre",
+                              "Choose the Dictionary displayed in this window",
+                              "Elegir el Diccionario mostrado en esta ventana")
+        );
+        m_dictCombo->addItem(
+            SwordEngine::uiTr("★ Grec/Hébreu Strong Auto", "★ Greek/Hebrew Strong's Auto", "★ Griego/Hebreo Strong Auto"),
+            "AUTO_STRONG"
+        );
         for (const auto& lx : m_engine->getLexiconModules()) {
-            QString flag = (lx.language == "fr") ? "🇫🇷 " : "";
-            m_dictCombo->addItem(QString("%1%2 — %3").arg(flag, lx.name, lx.description), lx.name);
+            QString flag = SwordEngine::languageFlag(lx.language);
+            m_dictCombo->addItem(QString("%1 %2 — %3").arg(flag, lx.name, lx.description), lx.name);
         }
         connect(m_dictCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int idx) {
             if (m_updatingControls || idx < 0) return;
@@ -1282,7 +1736,11 @@ UniversalPaneWidget::UniversalPaneWidget(int paneIndex, SwordEngine* engine, Gem
         });
 
         m_dictSearchEdit = new QLineEdit();
-        m_dictSearchEdit->setPlaceholderText("Strong (G3056, H1697) ou mot...");
+        m_dictSearchEdit->setPlaceholderText(
+            SwordEngine::uiTr("Strong (G3056, H1697) ou mot...",
+                              "Strong's (G3056, H1697) or word...",
+                              "Strong (G3056, H1697) o palabra...")
+        );
         m_dictSearchEdit->setClearButtonEnabled(true);
         connect(m_dictSearchEdit, &QLineEdit::returnPressed, this, &UniversalPaneWidget::onDictManualSearch);
 
@@ -1291,7 +1749,7 @@ UniversalPaneWidget::UniversalPaneWidget(int paneIndex, SwordEngine* engine, Gem
         m_headerModeStack->addWidget(dictHeader);
     }
 
-    // --- Header Page 3 : Contrôles IA GEMINI & SOURCES + MENU DÉROULANT DES DRAPEAUX (🇫🇷 🇪🇸 🇬🇧) ---
+    // --- Header Page 3 : Contrôles IA GEMINI & SOURCES + MENU DÉROULANT AUTOMATIQUE DES LANGUES INSTALLÉES ---
     {
         auto* aiHeader = new QWidget();
         auto* ahLayout = new QHBoxLayout(aiHeader);
@@ -1300,15 +1758,23 @@ UniversalPaneWidget::UniversalPaneWidget(int paneIndex, SwordEngine* engine, Gem
 
         m_modeChatBtn = new QPushButton("💬 Chat");
         m_modeChatBtn->setCursor(Qt::PointingHandCursor);
-        m_modeChatBtn->setToolTip("Mode Chat Gemini (IA) : discuter librement avec l'IA comme dans Gemini");
+        m_modeChatBtn->setToolTip(
+            SwordEngine::uiTr("Mode Chat Gemini (IA) : discuter librement avec l'IA comme dans Gemini",
+                              "Gemini AI Chat mode: chat freely with the AI",
+                              "Modo Chat Gemini (IA): conversar libremente con la IA")
+        );
         connect(m_modeChatBtn, &QPushButton::clicked, this, [this]() {
             setAiChatMode(true);
             emit paneConfigChanged(m_paneIndex);
         });
 
-        m_modeSourcesBtn = new QPushButton("📚 Sources");
+        m_modeSourcesBtn = new QPushButton(SwordEngine::uiTr("📚 Sources", "📚 Sources", "📚 Fuentes"));
         m_modeSourcesBtn->setCursor(Qt::PointingHandCursor);
-        m_modeSourcesBtn->setToolTip("Mode Recherche dans les Sources locales (Bibles, Grec/Hébreu Strong, Commentaires)");
+        m_modeSourcesBtn->setToolTip(
+            SwordEngine::uiTr("Mode Recherche dans les Sources locales (Bibles, Grec/Hébreu Strong, Commentaires, TSK)",
+                              "Local Sources Search mode (Bibles, Greek/Hebrew Strong's, Commentaries, TSK)",
+                              "Modo Búsqueda en Fuentes locales (Biblias, Griego/Hebreo Strong, Comentarios, TSK)")
+        );
         connect(m_modeSourcesBtn, &QPushButton::clicked, this, [this]() {
             setAiChatMode(false);
             emit paneConfigChanged(m_paneIndex);
@@ -1316,15 +1782,7 @@ UniversalPaneWidget::UniversalPaneWidget(int paneIndex, SwordEngine* engine, Gem
 
         m_aiLangCombo = new QComboBox();
         m_aiLangCombo->setCursor(Qt::PointingHandCursor);
-        m_aiLangCombo->addItem("🇫🇷 Français", "fr");
-        m_aiLangCombo->addItem("🇪🇸 Español", "es");
-        m_aiLangCombo->addItem("🇬🇧 English", "en");
-        m_aiLangCombo->setToolTip(
-            "Choisir la langue dans laquelle Gemini rédige sa réponse :\n"
-            "• 🇫🇷 Français (Louis Segond)\n"
-            "• 🇪🇸 Español (Reina-Valera 1960 / LBLA — même si vous posez la question en français)\n"
-            "• 🇬🇧 English"
-        );
+        populateAiLanguageCombo();
         m_aiLangCombo->setStyleSheet(
             "QComboBox { background-color: rgba(16, 185, 129, 0.22); color: #F8FAFC; "
             "border: 1px solid #10B981; border-radius: 5px; font-weight: bold; padding: 3px 8px; }"
@@ -1337,7 +1795,11 @@ UniversalPaneWidget::UniversalPaneWidget(int paneIndex, SwordEngine* engine, Gem
 
         m_topClearAiBtn = new QPushButton("🧹");
         m_topClearAiBtn->setCursor(Qt::PointingHandCursor);
-        m_topClearAiBtn->setToolTip("Nettoyer la fenêtre IA et vider la zone de saisie");
+        m_topClearAiBtn->setToolTip(
+            SwordEngine::uiTr("Nettoyer la fenêtre IA et vider la zone de saisie",
+                              "Clear the AI window and input box",
+                              "Limpiar la ventana IA y el campo de texto")
+        );
         m_topClearAiBtn->setStyleSheet(
             "QPushButton { background-color: rgba(239, 68, 68, 0.18); color: #FCA5A5; "
             "border: 1px solid #DC2626; border-radius: 5px; font-weight: bold; padding: 3px 6px; }"
@@ -1363,7 +1825,11 @@ UniversalPaneWidget::UniversalPaneWidget(int paneIndex, SwordEngine* engine, Gem
         m_notesListCombo->setMaxVisibleItems(25);
         m_notesListCombo->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
         m_notesListCombo->setMinimumContentsLength(8);
-        m_notesListCombo->setToolTip("Choisir une note personnelle existante pour aller directement à son verset");
+        m_notesListCombo->setToolTip(
+            SwordEngine::uiTr("Choisir une note personnelle existante pour aller directement à son verset",
+                              "Choose an existing personal note to jump directly to its verse",
+                              "Elegir una nota personal existente para ir directamente a su versículo")
+        );
         connect(m_notesListCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int idx) {
             if (m_updatingControls || idx <= 0) return;
             QString key = m_notesListCombo->itemData(idx).toString();
@@ -1373,9 +1839,13 @@ UniversalPaneWidget::UniversalPaneWidget(int paneIndex, SwordEngine* engine, Gem
             loadPassage(b, c, v, true, true);
         });
 
-        m_notesAddBlockBtn = new QPushButton("➕ Annotation");
+        m_notesAddBlockBtn = new QPushButton(SwordEngine::uiTr("➕ Annotation", "➕ Note Block", "➕ Anotación"));
         m_notesAddBlockBtn->setCursor(Qt::PointingHandCursor);
-        m_notesAddBlockBtn->setToolTip("Ajouter un nouveau bloc d'annotation personnelle à la suite de cette fiche");
+        m_notesAddBlockBtn->setToolTip(
+            SwordEngine::uiTr("Ajouter un nouveau bloc d'annotation personnelle à la suite de cette fiche",
+                              "Add a new personal annotation block to this study note",
+                              "Añadir un nuevo bloque de anotación personal a esta ficha")
+        );
         m_notesAddBlockBtn->setStyleSheet(
             "QPushButton { background-color: rgba(2, 132, 199, 0.22); color: #38BDF8; "
             "border: 1px solid #0284C7; border-radius: 5px; font-weight: bold; padding: 3px 8px; }"
@@ -1389,12 +1859,17 @@ UniversalPaneWidget::UniversalPaneWidget(int paneIndex, SwordEngine* engine, Gem
             m_engine->appendAnnotationBlockToPersonalNote(key, m_bibleMod);
             refreshPersonalNoteView(true);
             emit personalNoteModified(key);
-            emit statusNotification(QString("✍️ Nouveau bloc d'annotation ajouté à la note de %1.").arg(m_engine->toFrenchReference(key)));
+            emit statusNotification(
+                SwordEngine::uiTr("✍️ Nouveau bloc d'annotation ajouté à la note de %1.",
+                                  "✍️ New annotation block added to note for %1.",
+                                  "✍️ Nuevo bloque de anotación añadido a la nota de %1.")
+                    .arg(m_engine->toFrenchReference(key))
+            );
         });
 
         m_notesBoldBtn = new QPushButton("B");
         m_notesBoldBtn->setCursor(Qt::PointingHandCursor);
-        m_notesBoldBtn->setToolTip("Mettre le texte sélectionné en Gras");
+        m_notesBoldBtn->setToolTip(SwordEngine::uiTr("Mettre le texte sélectionné en Gras", "Bold selected text", "Poner texto seleccionado en Negrita"));
         m_notesBoldBtn->setStyleSheet(
             "QPushButton { background-color: #1E293B; color: #F8FAFC; border: 1px solid #475569; "
             "border-radius: 5px; font-weight: bold; padding: 3px 8px; }"
@@ -1412,7 +1887,7 @@ UniversalPaneWidget::UniversalPaneWidget(int paneIndex, SwordEngine* engine, Gem
 
         m_notesHighlightBtn = new QPushButton("🖍️");
         m_notesHighlightBtn->setCursor(Qt::PointingHandCursor);
-        m_notesHighlightBtn->setToolTip("Surligner en jaune/or le passage sélectionné dans votre note");
+        m_notesHighlightBtn->setToolTip(SwordEngine::uiTr("Surligner en jaune/or le passage sélectionné", "Highlight selected text in gold", "Resaltar texto seleccionado"));
         m_notesHighlightBtn->setStyleSheet(
             "QPushButton { background-color: rgba(245, 158, 11, 0.22); color: #FBBF24; border: 1px solid #D97706; "
             "border-radius: 5px; font-weight: bold; padding: 3px 8px; }"
@@ -1432,9 +1907,13 @@ UniversalPaneWidget::UniversalPaneWidget(int paneIndex, SwordEngine* engine, Gem
             m_notesEditor->setFocus();
         });
 
-        m_notesCopyForWordBtn = new QPushButton("📋 Copier");
+        m_notesCopyForWordBtn = new QPushButton(SwordEngine::uiTr("📋 Copier", "📋 Copy", "📋 Copiar"));
         m_notesCopyForWordBtn->setCursor(Qt::PointingHandCursor);
-        m_notesCopyForWordBtn->setToolTip("Copier toute cette fiche d'étude (format propre sans fond noir) pour la coller directement dans votre traitement de texte (LibreOffice / Word)");
+        m_notesCopyForWordBtn->setToolTip(
+            SwordEngine::uiTr("Copier toute cette fiche d'étude (format propre sans fond noir) pour la coller dans LibreOffice / Word",
+                              "Copy this study note (clean format on white background) to paste into LibreOffice / Word",
+                              "Copiar esta ficha de estudio para pegarla en LibreOffice / Word")
+        );
         m_notesCopyForWordBtn->setStyleSheet(
             "QPushButton { background-color: rgba(16, 185, 129, 0.20); color: #34D399; "
             "border: 1px solid #059669; border-radius: 5px; font-weight: bold; padding: 3px 8px; }"
@@ -1447,14 +1926,19 @@ UniversalPaneWidget::UniversalPaneWidget(int paneIndex, SwordEngine* engine, Gem
             QString frRef = m_engine->toFrenchReference(swordKey());
             auto* mime = new QMimeData();
             mime->setText(plain);
-            mime->setHtml(GeminiClient::markdownToWordProcessorHtml(plain, QString("📌 Fiche d'étude — %1").arg(frRef)));
+            mime->setHtml(GeminiClient::markdownToWordProcessorHtml(plain, QString("📌 %1").arg(frRef)));
             QApplication::clipboard()->setMimeData(mime);
-            emit statusNotification(QString("📋 Fiche de %1 copiée — prête à coller (Ctrl+V) dans votre traitement de texte !").arg(frRef));
+            emit statusNotification(
+                SwordEngine::uiTr("📋 Fiche de %1 copiée — prête à coller (Ctrl+V) !",
+                                  "📋 Study note for %1 copied — ready to paste (Ctrl+V)!",
+                                  "📋 Ficha de %1 copiada — ¡lista para pegar (Ctrl+V)!")
+                    .arg(frRef)
+            );
         });
 
         m_notesDeleteBtn = new QPushButton("🗑️");
         m_notesDeleteBtn->setCursor(Qt::PointingHandCursor);
-        m_notesDeleteBtn->setToolTip("Effacer la note personnelle de ce verset");
+        m_notesDeleteBtn->setToolTip(SwordEngine::uiTr("Effacer la note personnelle de ce verset", "Delete personal note for this verse", "Borrar la nota personal de este versículo"));
         m_notesDeleteBtn->setStyleSheet(
             "QPushButton { background-color: rgba(239, 68, 68, 0.18); color: #FCA5A5; "
             "border: 1px solid #DC2626; border-radius: 5px; font-weight: bold; padding: 3px 8px; }"
@@ -1466,7 +1950,11 @@ UniversalPaneWidget::UniversalPaneWidget(int paneIndex, SwordEngine* engine, Gem
             m_engine->deletePersonalNote(key);
             refreshPersonalNoteView(false);
             emit personalNoteModified(key);
-            emit statusNotification(QString("🗑️ Note personnelle de %1 supprimée.").arg(frRef));
+            emit statusNotification(
+                SwordEngine::uiTr("🗑️ Note personnelle de %1 supprimée.",
+                                  "🗑️ Personal note for %1 deleted.",
+                                  "🗑️ Nota personal de %1 eliminada.").arg(frRef)
+            );
         });
 
         m_notesLinkBtn = new QPushButton();
@@ -1485,12 +1973,88 @@ UniversalPaneWidget::UniversalPaneWidget(int paneIndex, SwordEngine* engine, Gem
         m_headerModeStack->addWidget(notesHeader);
     }
 
-    auto* gearBtn = createGearButton(QString("⚙ Réglages de la Fenêtre %1 (taille des lettres, contraste, couleurs)").arg(paneIndex + 1));
-    connect(gearBtn, &QToolButton::clicked, this, &UniversalPaneWidget::onOpenGearSettings);
+    m_splitDownBtn = new QToolButton();
+    m_splitDownBtn->setText("➕⬇");
+    m_splitDownBtn->setCursor(Qt::PointingHandCursor);
+    m_splitDownBtn->setFixedSize(30, 26);
+    m_splitDownBtn->setToolTip(
+        SwordEngine::uiTr(
+            "Ajouter une nouvelle fenêtre JUSTE EN DESSOUS de celle-ci (diviser Haut / Bas)\n"
+            "• Cliquez pour choisir quel outil ouvrir en bas (Bible, Commentaires, Dictionnaire, IA, Notes)",
+            "Add a new window RIGHT BELOW this one (split Top / Bottom)\n"
+            "• Click to choose which tool to open below (Bible, Commentaries, Dictionary, AI, Notes)",
+            "Añadir una nueva ventana DEBAJO de esta (dividir Arriba / Abajo)\n"
+            "• Haga clic para elegir qué herramienta abrir abajo"
+        )
+    );
+    m_splitDownBtn->setStyleSheet(
+        "QToolButton { background-color: rgba(16, 185, 129, 0.16); color: #34D399; "
+        "border: 1px solid #059669; border-radius: 5px; font-weight: bold; font-size: 8.5pt; padding: 1px 2px; }"
+        "QToolButton:hover { background-color: rgba(16, 185, 129, 0.34); color: #ECFDF5; }"
+    );
+    connect(m_splitDownBtn, &QToolButton::clicked, this, [this]() {
+        showSplitMenu(Qt::Vertical, m_splitDownBtn);
+    });
+
+    m_splitRightBtn = new QToolButton();
+    m_splitRightBtn->setText("➕➡");
+    m_splitRightBtn->setCursor(Qt::PointingHandCursor);
+    m_splitRightBtn->setFixedSize(30, 26);
+    m_splitRightBtn->setToolTip(
+        SwordEngine::uiTr(
+            "Ajouter une nouvelle fenêtre À DROITE de celle-ci (diviser Gauche / Droite)\n"
+            "• Cliquez pour choisir quel outil ouvrir à droite (Bible, Commentaires, Dictionnaire, IA, Notes)",
+            "Add a new window TO THE RIGHT of this one (split Left / Right)\n"
+            "• Click to choose which tool to open on the right (Bible, Commentaries, Dictionary, AI, Notes)",
+            "Añadir una nueva ventana A LA DERECHA de esta (dividir Izquierda / Derecha)\n"
+            "• Haga clic para elegir qué herramienta abrir a la derecha"
+        )
+    );
+    m_splitRightBtn->setStyleSheet(
+        "QToolButton { background-color: rgba(2, 132, 199, 0.18); color: #38BDF8; "
+        "border: 1px solid #0284C7; border-radius: 5px; font-weight: bold; font-size: 8.5pt; padding: 1px 2px; }"
+        "QToolButton:hover { background-color: rgba(2, 132, 199, 0.36); color: #F0F9FF; }"
+    );
+    connect(m_splitRightBtn, &QToolButton::clicked, this, [this]() {
+        showSplitMenu(Qt::Horizontal, m_splitRightBtn);
+    });
+
+    m_closePaneBtn = new QToolButton();
+    m_closePaneBtn->setText("✕");
+    m_closePaneBtn->setCursor(Qt::PointingHandCursor);
+    m_closePaneBtn->setFixedSize(26, 26);
+    m_closePaneBtn->setToolTip(
+        SwordEngine::uiTr(
+            "Fermer / Éliminer cette fenêtre\n"
+            "• Les fenêtres voisines reprendront automatiquement toute la place disponible.",
+            "Close / Remove this window\n"
+            "• Neighboring windows will automatically expand to fill the space.",
+            "Cerrar / Eliminar esta ventana\n"
+            "• Las ventanas vecinas ocuparán automáticamente el espacio disponible."
+        )
+    );
+    m_closePaneBtn->setStyleSheet(
+        "QToolButton { background-color: rgba(239, 68, 68, 0.15); color: #F87171; "
+        "border: 1px solid rgba(239, 68, 68, 0.45); border-radius: 5px; font-weight: bold; font-size: 9.5pt; }"
+        "QToolButton:hover { background-color: rgba(239, 68, 68, 0.35); color: #FEF2F2; border-color: #EF4444; }"
+    );
+    connect(m_closePaneBtn, &QToolButton::clicked, this, [this]() {
+        emit closePaneRequested(this);
+    });
+
+    m_gearBtn = createGearButton(
+        SwordEngine::uiTr("⚙ Réglages de la Fenêtre %1 (taille des lettres, contraste, couleurs)",
+                          "⚙ Window %1 Settings (font size, contrast, colors)",
+                          "⚙ Ajustes de la Ventana %1 (tamaño de letra, contraste, colores)").arg(paneIndex + 1)
+    );
+    connect(m_gearBtn, &QToolButton::clicked, this, &UniversalPaneWidget::onOpenGearSettings);
 
     topRow->addWidget(m_typeCombo);
     topRow->addWidget(m_headerModeStack, 1);
-    topRow->addWidget(gearBtn);
+    topRow->addWidget(m_splitDownBtn);
+    topRow->addWidget(m_splitRightBtn);
+    topRow->addWidget(m_closePaneBtn);
+    topRow->addWidget(m_gearBtn);
     rootLayout->addLayout(topRow);
 
     // ========================================================================
@@ -1508,7 +2072,7 @@ UniversalPaneWidget::UniversalPaneWidget(int paneIndex, SwordEngine* engine, Gem
 
     auto* prevBtn = new QToolButton();
     prevBtn->setText("◀");
-    prevBtn->setToolTip("Chapitre précédent");
+    prevBtn->setToolTip(SwordEngine::uiTr("Chapitre précédent", "Previous chapter", "Capítulo anterior"));
     prevBtn->setFixedSize(24, 24);
     connect(prevBtn, &QToolButton::clicked, this, &UniversalPaneWidget::onPrevChapter);
 
@@ -1516,9 +2080,9 @@ UniversalPaneWidget::UniversalPaneWidget(int paneIndex, SwordEngine* engine, Gem
     m_bookCombo->setMaxVisibleItems(28);
     m_bookCombo->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
     m_bookCombo->setMinimumContentsLength(6);
-    m_bookCombo->setToolTip("Choisir le livre biblique");
+    m_bookCombo->setToolTip(SwordEngine::uiTr("Choisir le livre biblique", "Choose Bible book", "Elegir libro bíblico"));
     for (const auto& bk : m_engine->getBooks()) {
-        m_bookCombo->addItem(bk.frenchName, bk.swordName);
+        m_bookCombo->addItem(SwordEngine::localizedBookName(bk), bk.swordName);
     }
 
     m_chapterSpin = new QSpinBox();
@@ -1531,12 +2095,14 @@ UniversalPaneWidget::UniversalPaneWidget(int paneIndex, SwordEngine* engine, Gem
 
     auto* nextBtn = new QToolButton();
     nextBtn->setText("▶");
-    nextBtn->setToolTip("Chapitre suivant");
+    nextBtn->setToolTip(SwordEngine::uiTr("Chapitre suivant", "Next chapter", "Capítulo siguiente"));
     nextBtn->setFixedSize(24, 24);
     connect(nextBtn, &QToolButton::clicked, this, &UniversalPaneWidget::onNextChapter);
 
     m_quickRefEdit = new QLineEdit();
-    m_quickRefEdit->setPlaceholderText("Aller à (Jean 11:28)...");
+    m_quickRefEdit->setPlaceholderText(
+        SwordEngine::uiTr("Aller à (Jean 11:28)...", "Go to (John 11:28)...", "Ir a (Juan 11:28)...")
+    );
     m_quickRefEdit->setClearButtonEnabled(true);
     m_quickRefEdit->setMaximumWidth(145);
 
@@ -1580,13 +2146,26 @@ UniversalPaneWidget::UniversalPaneWidget(int paneIndex, SwordEngine* engine, Gem
     // --- Page 0 : Browser standard (Bible, Commentaire, Dictionnaire) ---
     m_browser = new InteractiveTextBrowser(true);
     connect(m_browser, &QTextBrowser::anchorClicked, this, &UniversalPaneWidget::onBrowserAnchorClicked);
+    connect(m_browser, &InteractiveTextBrowser::openReferenceInPaneRequested,
+            this, [this](int targetPaneIdx, const QString& rawRef) {
+        QString b; int c = 1, v = 1;
+        QString key = m_engine->parseUserReference(rawRef, &c, &v, &b);
+        if (targetPaneIdx == -2) {
+            emit navigateToReferenceRequested(m_paneIndex, key);
+        } else {
+            emit navigateToReferenceInPaneRequested(m_paneIndex, targetPaneIdx, key);
+        }
+    });
     connect(m_browser, &InteractiveTextBrowser::verseDropped,
             this, [this](const QString& book, int chapter, int verse) {
         loadPassage(book, chapter, verse, true, true);
         QString key = QString("%1 %2:%3").arg(book).arg(chapter).arg(verse);
         QString frRef = m_engine->toFrenchReference(key);
         emit statusNotification(
-            QString("✓ Verset %1 déposé et affiché dans la Fenêtre %2.").arg(frRef).arg(m_paneIndex + 1)
+            SwordEngine::uiTr("✓ Verset %1 déposé et affiché dans la Fenêtre %2.",
+                              "✓ Verse %1 dropped and displayed in Window %2.",
+                              "✓ Versículo %1 soltado y mostrado en la Ventana %2.")
+                .arg(frRef).arg(m_paneIndex + 1)
         );
     });
     connect(m_browser, &InteractiveTextBrowser::selectionAiPreparedRequested,
@@ -1664,7 +2243,11 @@ UniversalPaneWidget::UniversalPaneWidget(int paneIndex, SwordEngine* engine, Gem
     aiLayout->setContentsMargins(0, 0, 0, 0);
     aiLayout->setSpacing(4);
 
-    m_geminiStatusLabel = new QLabel("💬 Mode Chat Gemini actif — Choisissez le drapeau de langue (🇫🇷 FR, 🇪🇸 ES, 🇫🇷+🇪🇸, 🇬🇧 EN) en haut.");
+    m_geminiStatusLabel = new QLabel(
+        SwordEngine::uiTr("💬 Mode Chat Gemini actif — Langue automatique selon la Bible active ou au choix.",
+                          "💬 Gemini Chat mode active — Automatic language from active Bible or manual choice.",
+                          "💬 Modo Chat Gemini activo — Idioma automático según la Biblia activa o a elección.")
+    );
     m_geminiStatusLabel->setStyleSheet("font-size: 9pt; color: #38BDF8;");
     m_geminiStatusLabel->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
     aiLayout->addWidget(m_geminiStatusLabel);
@@ -1679,6 +2262,16 @@ UniversalPaneWidget::UniversalPaneWidget(int paneIndex, SwordEngine* engine, Gem
     m_geminiBrowser = new InteractiveTextBrowser(false);
     m_geminiBrowser->setMinimumHeight(80);
     connect(m_geminiBrowser, &QTextBrowser::anchorClicked, this, &UniversalPaneWidget::onBrowserAnchorClicked);
+    connect(m_geminiBrowser, &InteractiveTextBrowser::openReferenceInPaneRequested,
+            this, [this](int targetPaneIdx, const QString& rawRef) {
+        QString b; int c = 1, v = 1;
+        QString key = m_engine->parseUserReference(rawRef, &c, &v, &b);
+        if (targetPaneIdx == -2) {
+            emit navigateToReferenceRequested(m_paneIndex, key);
+        } else {
+            emit navigateToReferenceInPaneRequested(m_paneIndex, targetPaneIdx, key);
+        }
+    });
     connect(m_geminiBrowser, &InteractiveTextBrowser::verseDropped,
             this, [this](const QString& book, int chapter, int verse) {
         handleVerseDroppedInAi(book, chapter, verse, m_bibleMod);
@@ -1944,22 +2537,89 @@ void UniversalPaneWidget::setAiChatMode(bool chatMode) {
     updateAiModeSwitchUi();
 }
 
+void UniversalPaneWidget::populateAiLanguageCombo() {
+    if (!m_aiLangCombo || !m_engine) return;
+    bool prevUpd = m_updatingControls;
+    m_updatingControls = true;
+
+    QString currentSelection = m_aiResponseLang;
+    m_aiLangCombo->clear();
+    m_aiLangCombo->addItem("🔄 Auto (selon la Bible)", "auto");
+
+    const QStringList installedLangs = m_engine->getInstalledStudyLanguages();
+    QStringList tooltipLines;
+    tooltipLines << "Choisir la langue dans laquelle l'IA rédige sa réponse :"
+                 << "• 🔄 Auto (selon la Bible) : répond automatiquement dans la langue de la Bible active ou du passage sélectionné (sinon la langue de votre système).";
+
+    for (const QString& lang : installedLangs) {
+        QString label = SwordEngine::languageFlagAndName(lang);
+        m_aiLangCombo->addItem(label, lang);
+        tooltipLines << QString("• %1 (détecté depuis vos modules installés / votre système)").arg(label);
+    }
+    m_aiLangCombo->setToolTip(tooltipLines.join("\n"));
+
+    int idx = m_aiLangCombo->findData(currentSelection);
+    if (idx < 0 && !currentSelection.isEmpty() && currentSelection != "auto") {
+        // Si l'utilisateur avait une langue enregistrée pas encore listée, l'ajouter proprement
+        m_aiLangCombo->addItem(SwordEngine::languageFlagAndName(currentSelection), currentSelection);
+        idx = m_aiLangCombo->findData(currentSelection);
+    }
+    if (idx >= 0) {
+        m_aiLangCombo->setCurrentIndex(idx);
+    } else {
+        m_aiLangCombo->setCurrentIndex(0);
+    }
+
+    m_updatingControls = prevUpd;
+}
+
+QString UniversalPaneWidget::effectiveAiLanguageCode() const {
+    QString c = m_aiResponseLang.trimmed().toLower();
+    if (!c.isEmpty() && c != "auto") {
+        return c;
+    }
+
+    // Mode "auto" : détecter la langue du module source (Bible ou Commentaire)
+    if (m_engine) {
+        if (!m_preparedBibleMod.isEmpty()) {
+            QString modLang = m_engine->getModuleLanguage(m_preparedBibleMod);
+            if (!modLang.isEmpty() && !SwordEngine::isAncientBiblicalLanguage(modLang)) {
+                return modLang;
+            }
+        }
+        for (const QString& actMod : m_preparedActiveBibles) {
+            QString modLang = m_engine->getModuleLanguage(actMod);
+            if (!modLang.isEmpty() && !SwordEngine::isAncientBiblicalLanguage(modLang)) {
+                return modLang;
+            }
+        }
+        if (!m_bibleMod.isEmpty()) {
+            QString modLang = m_engine->getModuleLanguage(m_bibleMod);
+            if (!modLang.isEmpty() && !SwordEngine::isAncientBiblicalLanguage(modLang)) {
+                return modLang;
+            }
+        }
+    }
+    return SwordEngine::detectSystemLanguageCode();
+}
+
 void UniversalPaneWidget::setAiResponseLanguage(const QString& langCode, bool emitSignal) {
     QString c = langCode.trimmed().toLower();
-    if (c != "es" && c != "en") c = "fr";
+    if (c.isEmpty()) c = "auto";
     m_aiResponseLang = c;
     if (m_gemini) {
-        m_gemini->setResponseLanguage(c);
+        m_gemini->setResponseLanguage(effectiveAiLanguageCode());
     }
     updateAiLanguageButtonsUi();
     updateAiModeSwitchUi();
 
     if (emitSignal) {
         emit paneConfigChanged(m_paneIndex);
-        emit statusNotification(
-            QString("🌍 Langue de réponse IA réglée sur : %1 — vos prochaines réponses Gemini seront dans cette langue.")
-                .arg(GeminiClient::languageDisplayName(m_aiResponseLang))
-        );
+        QString effDisp = GeminiClient::languageDisplayName(effectiveAiLanguageCode());
+        QString msg = (m_aiResponseLang == "auto")
+            ? QString("🔄 Langue IA en mode Automatique (suit la langue du module étudié — actuellement : %1).").arg(effDisp)
+            : QString("🌍 Langue de réponse IA réglée sur : %1 — vos prochaines réponses Gemini seront dans cette langue.").arg(effDisp);
+        emit statusNotification(msg);
     }
 }
 
@@ -1968,6 +2628,10 @@ void UniversalPaneWidget::updateAiLanguageButtonsUi() {
     bool prevUpd = m_updatingControls;
     m_updatingControls = true;
     int idx = m_aiLangCombo->findData(m_aiResponseLang);
+    if (idx < 0 && !m_aiResponseLang.isEmpty()) {
+        populateAiLanguageCombo();
+        idx = m_aiLangCombo->findData(m_aiResponseLang);
+    }
     if (idx >= 0) {
         m_aiLangCombo->setCurrentIndex(idx);
     }
@@ -2009,8 +2673,12 @@ void UniversalPaneWidget::updateLinkButtonUi() {
 void UniversalPaneWidget::updateAiModeSwitchUi() {
     if (!m_modeChatBtn || !m_modeSourcesBtn || !m_sendAiBtn || !m_geminiInputEdit) return;
 
-    QString langBadge = (m_aiResponseLang == "es") ? "🇪🇸 ES"
-                      : (m_aiResponseLang == "en" ? "🇬🇧 EN" : "🇫🇷 FR");
+    QString effLang = effectiveAiLanguageCode();
+    QString langBadge = QString("%1 %2").arg(SwordEngine::languageFlag(effLang), effLang.toUpper());
+    QString effDisplay = GeminiClient::languageDisplayName(effLang);
+    if (m_aiResponseLang == "auto") {
+        effDisplay = QString("🔄 Auto → %1").arg(effDisplay);
+    }
 
     if (m_aiChatMode) {
         m_modeChatBtn->setStyleSheet(
@@ -2029,14 +2697,14 @@ void UniversalPaneWidget::updateAiModeSwitchUi() {
             "QPushButton:hover { background-color: #0369A1; }"
         );
         m_geminiInputEdit->setPlaceholderText(
-            QString("💬 Chat Gemini [Réponse : %1] : écrivez en français ou en espagnol (ou dictez 🎤), "
-                    "Gemini répondra dans la langue choisie dans le menu déroulant en haut...")
-                .arg(GeminiClient::languageDisplayName(m_aiResponseLang))
+            QString("💬 Chat Gemini [Réponse : %1] : écrivez dans n'importe quelle langue (ou dictez 🎤), "
+                    "l'IA répondra dans la langue active...")
+                .arg(effDisplay)
         );
         if (!m_gemini->isPending()) {
             m_geminiStatusLabel->setText(
-                QString("💬 Langue de réponse active : %1 — Choisissez 🇫🇷 Français, 🇪🇸 Español ou 🇬🇧 English dans le menu en haut.")
-                    .arg(GeminiClient::languageDisplayName(m_aiResponseLang))
+                QString("💬 Langue de réponse active : %1 — Les langues de vos modules installés sont détectées automatiquement dans le menu en haut.")
+                    .arg(effDisplay)
             );
         }
     } else {
@@ -2278,20 +2946,9 @@ void UniversalPaneWidget::reloadModuleLists() {
 
     if (m_bibleCombo) {
         m_bibleCombo->clear();
-        const auto bibles = m_engine->getBibleModules();
-        for (const auto& b : bibles) {
-            if (b.language == "fr") m_bibleCombo->addItem(QString("🇫🇷 %1 — %2").arg(b.name, b.description), b.name);
-        }
-        for (const auto& b : bibles) {
-            if (b.language == "en") m_bibleCombo->addItem(QString("🇬🇧 %1 — %2").arg(b.name, b.description), b.name);
-        }
-        for (const auto& b : bibles) {
-            if (b.language == "es") m_bibleCombo->addItem(QString("🇪🇸 %1 — %2").arg(b.name, b.description), b.name);
-        }
-        for (const auto& b : bibles) {
-            if (b.language != "fr" && b.language != "en" && b.language != "es") {
-                m_bibleCombo->addItem(QString("🏛️ [%1] %2 — %3").arg(b.language.toUpper(), b.name, b.description), b.name);
-            }
+        for (const auto& b : m_engine->getBibleModules()) {
+            QString flag = SwordEngine::languageFlag(b.language);
+            m_bibleCombo->addItem(QString("%1 %2 — %3").arg(flag, b.name, b.description), b.name);
         }
     }
 
@@ -2299,8 +2956,8 @@ void UniversalPaneWidget::reloadModuleLists() {
         m_commCombo->clear();
         m_commCombo->addItem("★ Tous les Commentaires Français + TSK", "ALL_FR");
         for (const auto& cm : m_engine->getCommentaryModules()) {
-            QString flag = (cm.language == "fr") ? "🇫🇷 " : (cm.language == "en" ? "🇬🇧 " : (cm.language == "es" ? "🇪🇸 " : ""));
-            m_commCombo->addItem(QString("%1%2 — %3").arg(flag, cm.name, cm.description), cm.name);
+            QString flag = SwordEngine::languageFlag(cm.language);
+            m_commCombo->addItem(QString("%1 %2 — %3").arg(flag, cm.name, cm.description), cm.name);
         }
     }
 
@@ -2308,13 +2965,16 @@ void UniversalPaneWidget::reloadModuleLists() {
         m_dictCombo->clear();
         m_dictCombo->addItem("★ Grec/Hébreu Strong Auto", "AUTO_STRONG");
         for (const auto& lx : m_engine->getLexiconModules()) {
-            QString flag = (lx.language == "fr") ? "🇫🇷 " : (lx.language == "es" ? "🇪🇸 " : "");
-            m_dictCombo->addItem(QString("%1%2 — %3").arg(flag, lx.name, lx.description), lx.name);
+            QString flag = SwordEngine::languageFlag(lx.language);
+            m_dictCombo->addItem(QString("%1 %2 — %3").arg(flag, lx.name, lx.description), lx.name);
         }
     }
 
+    populateAiLanguageCombo();
+
     m_updatingControls = prevUpd;
     syncHeaderControls();
+    updateAiModeSwitchUi();
     refreshContent(false);
 }
 
@@ -2561,13 +3221,22 @@ void UniversalPaneWidget::onBrowserAnchorClicked(const QUrl& url) {
                     "1) Section en FRANÇAIS, suivie de 2) Section équivalente en ESPAÑOL (Reina-Valera 1960 / LBLA), "
                     "prête à être collée dans mon traitement de texte :\n\n%1"
                 ).arg(originalText);
-            } else {
+            } else if (targetLang == "fr") {
                 displayLabel = "🇫🇷 Traduire / Adapter cette étude en Français (Louis Segond)";
                 prompt = QString(
                     "Traduis et adapte intégralement en FRANÇAIS l'étude biblique et exégétique suivante "
                     "(avec la terminologie biblique française Louis Segond, en conservant tous les titres, "
                     "listes, gras et mots grecs/hébreux Strong, prête à être collée dans mon traitement de texte) :\n\n%1"
                 ).arg(originalText);
+            } else {
+                QString langDisp = SwordEngine::languageFlagAndName(targetLang);
+                QString langNative = SwordEngine::languageNativeName(targetLang);
+                displayLabel = QString("%1 Traduire / Adapter cette étude en %2").arg(SwordEngine::languageFlag(targetLang), langNative);
+                prompt = QString(
+                    "Translate and adapt the following biblical and exegetical study ENTIRELY into %1 (ISO code: %2), "
+                    "using standard biblical terminology and book names in %1, preserving all headings, bullet lists, bold text, "
+                    "and Greek/Hebrew Strong's word studies, ready to paste into a word processor:\n\n%3"
+                ).arg(langNative, targetLang, originalText);
             }
             QString ctx;
             QStringList activeBibles;
@@ -2586,7 +3255,7 @@ void UniversalPaneWidget::onCopyLatestAiForWordProcessor() {
         QString targetKey = m_preparedSwordKey.isEmpty() ? swordKey() : m_preparedSwordKey;
         QString frRef = m_engine->toFrenchReference(targetKey);
         QString titleHdr = QString("%1 — Extrait (%2)")
-            .arg(frRef, GeminiClient::languageDisplayName(m_aiResponseLang));
+            .arg(frRef, GeminiClient::languageDisplayName(effectiveAiLanguageCode()));
         QString cleanHtml = GeminiClient::markdownToWordProcessorHtml(selPlain, titleHdr);
         auto* mime = new QMimeData();
         mime->setHtml(cleanHtml);
@@ -2601,7 +3270,7 @@ void UniversalPaneWidget::onCopyLatestAiForWordProcessor() {
     const auto& hist = m_gemini->history();
     if (m_aiChatMode && !hist.isEmpty()) {
         for (int i = hist.size() - 1; i >= 0; --i) {
-            if (hist[i].role == "model") {
+            if (hist[i].role == "model" || hist[i].role == "model_output") {
                 copyTurnToWordProcessorClipboard(i);
                 return;
             }
@@ -2632,7 +3301,7 @@ void UniversalPaneWidget::copyTurnToWordProcessorClipboard(int turnIndex) {
     const ChatTurn& turn = hist[turnIndex];
     QString targetKey = m_preparedSwordKey.isEmpty() ? swordKey() : m_preparedSwordKey;
     QString frRef = m_engine->toFrenchReference(targetKey);
-    QString turnLang = turn.langCode.isEmpty() ? m_aiResponseLang : turn.langCode;
+    QString turnLang = turn.langCode.isEmpty() ? effectiveAiLanguageCode() : turn.langCode;
     QString titleHeader = QString("Étude Biblique — %1 (%2)")
         .arg(frRef, GeminiClient::languageDisplayName(turnLang));
 
@@ -2678,17 +3347,16 @@ void UniversalPaneWidget::preparePassageForAiQuestion(
     m_preparedExcerptText = excerptOrVerseText;
     m_preparedActiveBibles = activeBibles;
 
-    QString frRef = m_engine->toFrenchReference(key);
-    QString langLabel;
-    for (const auto& bm : m_engine->getBibleModules()) {
-        if (bm.name == sourceLabel) {
-            if (bm.language == "fr") langLabel = "Français";
-            else if (bm.language == "en") langLabel = "Anglais";
-            else if (bm.language == "es") langLabel = "Espagnol";
-            else langLabel = bm.language.toUpper();
-            break;
-        }
+    // Si la langue IA est en mode "auto", mettre à jour le bouton et GeminiClient selon la langue du module sélectionné
+    QString effLang = effectiveAiLanguageCode();
+    if (m_gemini) {
+        m_gemini->setResponseLanguage(effLang);
     }
+    updateAiModeSwitchUi();
+
+    QString frRef = m_engine->toFrenchReference(key);
+    QString modLang = m_engine->getModuleLanguage(sourceLabel);
+    QString langLabel = !modLang.isEmpty() ? SwordEngine::languageNativeName(modLang) : QString();
     QString modDesc = m_engine->getModuleDescription(sourceLabel);
     QString headerLine;
     if (!langLabel.isEmpty() && !modDesc.isEmpty()) {
@@ -2712,7 +3380,7 @@ void UniversalPaneWidget::preparePassageForAiQuestion(
         m_localFallbackCardHtml.clear();
         m_geminiStatusLabel->setText(
             QString("✓ Sélection (%1 — %2) prête ci-dessous [Langue de réponse : %3]. Écrivez/dictez (🎤) votre question puis cliquez sur « 🚀 Envoyer ».")
-                .arg(frRef, sourceLabel, GeminiClient::languageDisplayName(m_aiResponseLang))
+                .arg(frRef, sourceLabel, GeminiClient::languageDisplayName(effLang))
         );
     } else {
         m_localFallbackCardHtml = buildLocalExegesisFallbackHtml(QString());
@@ -2799,24 +3467,31 @@ void UniversalPaneWidget::onSendCustomAiQuestion() {
     }
 
     if (q.isEmpty()) return;
-    if (q.endsWith("Ma question :") || q.endsWith("Ma question :")) {
-        if (m_aiResponseLang == "es") {
-            q += " Explica este pasaje en detalle en ESPAÑOL (sentido teológico, contexto histórico, estudio de las palabras originales griegas o hebreas Strong y aplicación pastoral para predicar).";
-        } else if (m_aiResponseLang == "fr_es") {
-            q += " Explique ce passage en détail en version BILINGUE Français + Español (sens théologique, contexte historique, mots originaux grecs/hébreux Strong et points de prédication dans les deux langues).";
-        } else if (m_aiResponseLang == "en") {
-            q += " Explain this passage in detail in ENGLISH (theological meaning, historical context, and original Greek/Hebrew Strong's word study).";
-        } else {
-            q += " Explique ce passage en détail (sens théologique, contexte historique et étude des mots originaux grecs ou hébreux).";
-        }
-    }
-
-    m_gemini->setResponseLanguage(m_aiResponseLang);
 
     QString ctx;
     QStringList activeBibles;
     emit requestStudyContext(ctx, activeBibles);
     m_preparedActiveBibles = activeBibles;
+
+    QString effLang = effectiveAiLanguageCode();
+
+    if (q.endsWith("Ma question :") || q.endsWith("Ma question :")) {
+        if (effLang == "es") {
+            q += " Explica este pasaje en detalle en ESPAÑOL (sentido teológico, contexto histórico, estudio de las palabras originales griegas o hebreas Strong y aplicación pastoral para predicar).";
+        } else if (effLang == "fr_es") {
+            q += " Explique ce passage en détail en version BILINGUE Français + Español (sens théologique, contexte historique, mots originaux grecs/hébreux Strong et points de prédication dans les deux langues).";
+        } else if (effLang == "en") {
+            q += " Explain this passage in detail in ENGLISH (theological meaning, historical context, and original Greek/Hebrew Strong's word study).";
+        } else if (effLang == "fr") {
+            q += " Explique ce passage en détail (sens théologique, contexte historique et étude des mots originaux grecs ou hébreux).";
+        } else {
+            q += QString(" Explain this passage in detail in %1 (theological meaning, historical context, and original Greek/Hebrew Strong's word study).")
+                     .arg(SwordEngine::languageNativeName(effLang));
+        }
+    }
+
+    m_gemini->setResponseLanguage(effLang);
+    updateAiModeSwitchUi();
 
     m_geminiInputEdit->clear();
     m_gemini->sendPrompt(q, ctx, q);
@@ -3201,7 +3876,17 @@ void UniversalPaneWidget::renderGeminiConversation() {
         }
     } else {
         const auto& hist = m_gemini->history();
-        QString activeLangDisp = GeminiClient::languageDisplayName(m_aiResponseLang);
+        QString effLang = effectiveAiLanguageCode();
+        QString activeLangDisp = GeminiClient::languageDisplayName(effLang);
+        if (m_aiResponseLang == "auto") {
+            activeLangDisp = QString("🔄 Auto → %1").arg(activeLangDisp);
+        }
+        const QStringList installedLangs = m_engine ? m_engine->getInstalledStudyLanguages() : QStringList{"fr", "en", "es"};
+        QStringList langNamesSample;
+        for (const QString& l : installedLangs) {
+            langNamesSample << SwordEngine::languageFlagAndName(l);
+        }
+
         if (hist.isEmpty() && !m_gemini->isPending()) {
             html += QString(R"(
                 <div style="background:%1; border:2px solid %2; border-radius:8px; padding:14px; margin-bottom:10px;">
@@ -3212,12 +3897,12 @@ void UniversalPaneWidget::renderGeminiConversation() {
                         Vous êtes dans le mode <b>💬 Chat Gemini (IA)</b>. Vous pouvez :
                     </div>
                     <ul style="margin:4px 0 8px 20px;">
-                        <li><b>Choisir la langue de réponse avec le menu déroulant des drapeaux en haut</b> : <b>🇫🇷 Français</b>, <b>🇪🇸 Español</b> (pour étudier et prêcher en espagnol) ou <b>🇬🇧 English</b>.</li>
+                        <li><b>Détection automatique des langues</b> : le menu déroulant en haut détecte automatiquement les langues de vos modules installés et de votre système (%6), ou s'adapte tout seul avec <b>« 🔄 Auto (selon la Bible) »</b>.</li>
                         <li><b>Coller directement dans votre traitement de texte (LibreOffice / Word)</b> : cliquez sur <b>« 📋 Copier (Traitement de texte) »</b> pour copier la réponse avec une mise en page propre sur fond blanc (titres, gras, listes).</li>
                         <li><b>Sélectionner n'importe quelle partie intéressante d'une réponse de Gemini</b> → <b>Clic Droit → « 📝 Ajouter la sélection à la note de %4 »</b> ou <b>« 📋 Copier la sélection pour Traitement de texte »</b>.</li>
                     </ul>
                 </div>
-            )").arg(m_style.cardBgColor, m_style.accentColor, m_style.accentColor, activeFrRef.toHtmlEscaped(), activeLangDisp.toHtmlEscaped());
+            )").arg(m_style.cardBgColor, m_style.accentColor, m_style.accentColor, activeFrRef.toHtmlEscaped(), activeLangDisp.toHtmlEscaped(), langNamesSample.join(", ").toHtmlEscaped());
 
             if (!m_preparedExcerptText.trimmed().isEmpty()) {
                 QString frRef = m_engine->toFrenchReference(m_preparedSwordKey);
@@ -3225,7 +3910,7 @@ void UniversalPaneWidget::renderGeminiConversation() {
                     <div style="background:%1; border-left:4px solid %2; border-radius:6px; padding:10px 12px; margin-bottom:10px;">
                         <b style="color:%2;">📌 Passage prêt dans la boîte de question (%3 — %4) [Réponse : %6] :</b><br>
                         « %5 »<br>
-                        <span style="color:#94A3B8; font-size:0.9em;">👉 Choisissez la langue (🇫🇷 Français / 🇪🇸 Español) dans le menu en haut, écrivez ou dictez (🎤) votre question puis cliquez sur <b>« 🚀 Envoyer »</b>.</span>
+                        <span style="color:#94A3B8; font-size:0.9em;">👉 Écrivez ou dictez (🎤) votre question puis cliquez sur <b>« 🚀 Envoyer »</b>.</span>
                     </div>
                 )").arg(m_style.cardBgColor, m_style.accentColor,
                         frRef.toHtmlEscaped(), m_preparedBibleMod.toHtmlEscaped(),
@@ -3236,7 +3921,7 @@ void UniversalPaneWidget::renderGeminiConversation() {
             bool isDark = QColor(m_style.bgColor).lightness() < 128;
             html += QString(R"(
                 <div style="background:rgba(245, 158, 11, 0.12); border:1px solid #D97706; border-radius:6px; padding:6px 10px; margin-bottom:10px; font-size:0.9em; color:#FBBF24;">
-                    💡 <b>Astuce Prédication & Notes (%1) :</b> Utilisez le bouton <b>« 📋 Copier pour Traitement de texte »</b> sous chaque réponse (ou <b>Clic Droit</b> sur une sélection) pour coller directement dans LibreOffice / Word sur fond blanc, ou <b>« 🇪🇸 Traduire en Español » / « 🇫🇷 Traduire en Français »</b> en 1 clic !
+                    💡 <b>Astuce Prédication & Notes (%1) :</b> Utilisez le bouton <b>« 📋 Copier pour Traitement de texte »</b> sous chaque réponse (ou <b>Clic Droit</b> sur une sélection) pour coller directement dans LibreOffice / Word sur fond blanc, ou traduisez la réponse en 1 clic dans n'importe quelle langue installée !
                 </div>
             )").arg(activeFrRef.toHtmlEscaped());
 
@@ -3249,7 +3934,7 @@ void UniversalPaneWidget::renderGeminiConversation() {
                     : GeminiClient::markdownToHtml(turn.text, isDark);
 
                 QString borderCol = isUser ? "#0284C7" : m_style.accentColor;
-                QString turnLang = turn.langCode.isEmpty() ? m_aiResponseLang : turn.langCode;
+                QString turnLang = turn.langCode.isEmpty() ? effLang : turn.langCode;
                 QString langDisp = GeminiClient::languageDisplayName(turnLang);
                 QString headerTitle = isUser
                     ? "👤 Vous"
@@ -3258,19 +3943,15 @@ void UniversalPaneWidget::renderGeminiConversation() {
                 QString actionFooter;
                 if (!isUser) {
                     QString translateLinks;
-                    if (turnLang != "es") {
+                    for (const QString& targetL : installedLangs) {
+                        if (targetL == turnLang) continue;
+                        QString pillLabel = QString("%1 Traduire en %2")
+                            .arg(SwordEngine::languageFlag(targetL), SwordEngine::languageNativeName(targetL));
                         translateLinks += QString(
-                            "<a class='action-pill' href='app://translate-turn/%1?lang=es' "
+                            "<a class='action-pill' href='app://translate-turn/%1?lang=%2' "
                             "style='background:rgba(245,158,11,0.18); color:#FBBF24; border:1px solid #D97706;'>"
-                            "🇪🇸 Traduire cette réponse en Español</a>"
-                        ).arg(i);
-                    }
-                    if (turnLang != "fr") {
-                        translateLinks += QString(
-                            "<a class='action-pill' href='app://translate-turn/%1?lang=fr' "
-                            "style='background:rgba(56,189,248,0.18); color:#38BDF8; border:1px solid #0284C7;'>"
-                            "🇫🇷 Traduire cette réponse en Français</a>"
-                        ).arg(i);
+                            "%3</a>"
+                        ).arg(i).arg(targetL, pillLabel.toHtmlEscaped());
                     }
 
                     actionFooter = QString(R"(
@@ -3370,6 +4051,72 @@ void UniversalPaneWidget::onOpenGearSettings() {
     );
 }
 
+void UniversalPaneWidget::setPaneIndex(int index) {
+    m_paneIndex = index;
+    if (m_typeCombo) {
+        m_typeCombo->setToolTip(
+            QString("Choisir ce qu'affiche la Fenêtre %1 :\n"
+                    "• 📖 Bible (Français, Anglais, Espagnol, Grec, Hébreu)\n"
+                    "• 📚 Commentaires & TSK (synchronisé ou indépendant)\n"
+                    "• 🏛️ Dictionnaire Grec / Hébreu (Strong Auto ou lexique)\n"
+                    "• 🤖 IA Gemini & Sources (Chat Gemini ou Recherche dans les Sources)\n"
+                    "• 📝 Notes Personnelles (fiches d'étude indexées par verset + extraits IA)").arg(m_paneIndex + 1)
+        );
+    }
+    if (m_gearBtn) {
+        m_gearBtn->setToolTip(QString("⚙ Réglages de la Fenêtre %1 (taille des lettres, contraste, couleurs)").arg(m_paneIndex + 1));
+    }
+}
+
+void UniversalPaneWidget::showSplitMenu(int orientation, QWidget* anchorBtn) {
+    QMenu menu(this);
+    menu.setStyleSheet(commonContextMenuStyleSheet());
+
+    QString dirLabel = (orientation == Qt::Vertical)
+        ? SwordEngine::uiTr("➕⬇ Ajouter une fenêtre EN DESSOUS de la Fenêtre %1 :",
+                            "➕⬇ Add a window BELOW Window %1:",
+                            "➕⬇ Añadir una ventana DEBAJO de la Ventana %1:").arg(m_paneIndex + 1)
+        : SwordEngine::uiTr("➕➡ Ajouter une fenêtre À DROITE de la Fenêtre %1 :",
+                            "➕➡ Add a window TO THE RIGHT of Window %1:",
+                            "➕➡ Añadir una ventana A LA DERECHA de la Ventana %1:").arg(m_paneIndex + 1);
+
+    QAction* headerAct = menu.addAction(dirLabel);
+    headerAct->setEnabled(false);
+    menu.addSeparator();
+
+    QAction* actBible = menu.addAction(SwordEngine::uiTr("📖 Bible (Français, Espagnol, Anglais, Grec/Hébreu...)",
+                                                         "📖 Bible (French, Spanish, English, Greek/Hebrew...)",
+                                                         "📖 Biblia (Francés, Español, Inglés, Griego/Hebreo...)"));
+    QAction* actComm  = menu.addAction(SwordEngine::uiTr("📚 Commentaires & Références croisées (TSK)",
+                                                         "📚 Commentaries & Cross-References (TSK)",
+                                                         "📚 Comentarios y Referencias cruzadas (TSK)"));
+    QAction* actDict  = menu.addAction(SwordEngine::uiTr("🏛️ Dictionnaire Grec / Hébreu (Strong)",
+                                                         "🏛️ Greek / Hebrew Dictionary (Strong's)",
+                                                         "🏛️ Diccionario Griego / Hebreo (Strong)"));
+    QAction* actAi    = menu.addAction(SwordEngine::uiTr("🤖 IA Gemini & Sources Locales",
+                                                         "🤖 Gemini AI & Local Sources",
+                                                         "🤖 IA Gemini y Fuentes Locales"));
+    QAction* actNotes = menu.addAction(SwordEngine::uiTr("📝 Notes Personnelles (fiche d'étude du verset)",
+                                                         "📝 Personal Notes (verse study note)",
+                                                         "📝 Notas Personales (ficha de estudio del versículo)"));
+
+    QPoint globalPos = anchorBtn
+        ? anchorBtn->mapToGlobal(QPoint(0, anchorBtn->height() + 2))
+        : QCursor::pos();
+
+    QAction* chosen = menu.exec(globalPos);
+    if (!chosen) return;
+
+    QString chosenMode = "COMMENTARY";
+    if (chosen == actBible) chosenMode = "BIBLE";
+    else if (chosen == actComm) chosenMode = "COMMENTARY";
+    else if (chosen == actDict) chosenMode = "DICTIONARY";
+    else if (chosen == actAi) chosenMode = "AI";
+    else if (chosen == actNotes) chosenMode = "NOTES";
+
+    emit splitPaneRequested(this, orientation, chosenMode);
+}
+
 QJsonObject UniversalPaneWidget::toJson() const {
     QJsonObject o;
     o["paneMode"] = m_paneMode;
@@ -3394,7 +4141,8 @@ void UniversalPaneWidget::fromJson(const QJsonObject& obj) {
     if (obj.contains("bibleMod")) setBibleModule(obj.value("bibleMod").toString("FreSegond"), false);
     if (obj.contains("commMod")) setCommentaryModule(obj.value("commMod").toString("ALL_FR"), false);
     if (obj.contains("dictMod")) setDictionaryModule(obj.value("dictMod").toString("AUTO_STRONG"), false);
-    if (obj.contains("aiResponseLang")) setAiResponseLanguage(obj.value("aiResponseLang").toString("fr"), false);
+    if (obj.contains("aiResponseLang")) setAiResponseLanguage(obj.value("aiResponseLang").toString("auto"), false);
+    else setAiResponseLanguage("auto", false);
     if (obj.contains("aiChatMode")) setAiChatMode(obj.value("aiChatMode").toBool(true));
     if (obj.contains("linked")) setLinked(obj.value("linked").toBool(true), false);
 
@@ -3434,18 +4182,30 @@ CenterScreenWidget::CenterScreenWidget(SwordEngine* engine, GeminiClient* gemini
     auto* topBar = new QHBoxLayout();
     topBar->setSpacing(8);
 
-    m_toggleSidebarBtn = new QPushButton("📂 Bibliothèque");
+    m_toggleSidebarBtn = new QPushButton(SwordEngine::uiTr("📂 Bibliothèque", "📂 Library", "📂 Biblioteca"));
     m_toggleSidebarBtn->setCursor(Qt::PointingHandCursor);
-    m_toggleSidebarBtn->setToolTip("Afficher / Masquer le panneau Bibliothèque & Navigation à gauche");
+    m_toggleSidebarBtn->setToolTip(
+        SwordEngine::uiTr("Afficher / Masquer le panneau Bibliothèque & Navigation à gauche",
+                          "Show / Hide the Library & Navigation panel on the left",
+                          "Mostrar / Ocultar el panel de Biblioteca y Navegación a la izquierda")
+    );
     connect(m_toggleSidebarBtn, &QPushButton::clicked, this, &CenterScreenWidget::toggleLeftSidebarRequested);
 
     m_linkToggleBtn = new QPushButton();
     m_linkToggleBtn->setCursor(Qt::PointingHandCursor);
     connect(m_linkToggleBtn, &QPushButton::clicked, this, &CenterScreenWidget::onToggleLinkColumns);
 
-    m_layoutPresetBtn = new QPushButton("📐 Mise en page (1/2 Écrans & Colonnes)");
+    m_layoutPresetBtn = new QPushButton(
+        SwordEngine::uiTr("📐 Mise en page (1/2 Écrans & Colonnes)",
+                          "📐 Layout (1/2 Screens & Columns)",
+                          "📐 Diseño (1/2 Pantallas y Columnas)")
+    );
     m_layoutPresetBtn->setCursor(Qt::PointingHandCursor);
-    m_layoutPresetBtn->setToolTip("Choisir le mode 1 ou 2 écrans, le nombre de colonnes (2, 3, 4 ou Mixte) et la disposition visuelle");
+    m_layoutPresetBtn->setToolTip(
+        SwordEngine::uiTr("Choisir le mode 1 ou 2 écrans, le nombre de colonnes (2, 3, 4 ou Mixte) et la disposition visuelle",
+                          "Choose 1 or 2 screens mode, column count (2, 3, 4 or Mixed) and visual layout",
+                          "Elegir modo de 1 o 2 pantallas, número de columnas (2, 3, 4 o Mixto) y disposición visual")
+    );
     m_layoutPresetBtn->setStyleSheet(
         "QPushButton { background-color: rgba(2, 132, 199, 0.22); color: #38BDF8; "
         "border: 1px solid #0284C7; border-radius: 5px; font-weight: bold; padding: 4px 12px; }"
@@ -3457,7 +4217,11 @@ CenterScreenWidget::CenterScreenWidget(SwordEngine* engine, GeminiClient* gemini
     m_syncStatusLabel->setStyleSheet("color: #94A3B8; font-size: 9.2pt;");
     m_syncStatusLabel->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
 
-    auto* gearBtn = createGearButton("⚙ Réglages globaux d'apparence (police, contraste, couleurs)");
+    auto* gearBtn = createGearButton(
+        SwordEngine::uiTr("⚙ Réglages globaux d'apparence (police, contraste, couleurs)",
+                          "⚙ Global Appearance Settings (font, contrast, colors)",
+                          "⚙ Ajustes globales de apariencia (fuente, contraste, colores)")
+    );
     connect(gearBtn, &QToolButton::clicked, this, &CenterScreenWidget::onOpenGearSettings);
 
     topBar->addWidget(m_toggleSidebarBtn);
@@ -3495,14 +4259,14 @@ CenterScreenWidget::CenterScreenWidget(SwordEngine* engine, GeminiClient* gemini
 void CenterScreenWidget::setLeftSidebarVisibleState(bool visible) {
     if (!m_toggleSidebarBtn) return;
     if (visible) {
-        m_toggleSidebarBtn->setText("📂 Bibliothèque");
+        m_toggleSidebarBtn->setText(SwordEngine::uiTr("📂 Bibliothèque", "📂 Library", "📂 Biblioteca"));
         m_toggleSidebarBtn->setStyleSheet(
             "QPushButton { background-color: #1E293B; color: #CBD5E1; border: 1px solid #334155; "
             "border-radius: 5px; font-weight: bold; padding: 4px 10px; }"
             "QPushButton:hover { background-color: #334155; }"
         );
     } else {
-        m_toggleSidebarBtn->setText("📂 Afficher Bibliothèque");
+        m_toggleSidebarBtn->setText(SwordEngine::uiTr("📂 Afficher Bibliothèque", "📂 Show Library", "📂 Mostrar Biblioteca"));
         m_toggleSidebarBtn->setStyleSheet(
             "QPushButton { background-color: rgba(245, 158, 11, 0.20); color: #FBBF24; border: 1px solid #D97706; "
             "border-radius: 5px; font-weight: bold; padding: 4px 10px; }"
@@ -3531,21 +4295,29 @@ bool CenterScreenWidget::isSecondPaneVisible() const {
 void CenterScreenWidget::updateLinkButtonUi() {
     if (!m_linkToggleBtn || !m_syncStatusLabel) return;
     if (m_columnsLinked) {
-        m_linkToggleBtn->setText("🔗 Fenêtres Liées");
+        m_linkToggleBtn->setText(SwordEngine::uiTr("🔗 Fenêtres Liées", "🔗 Linked Windows", "🔗 Ventanas Vinculadas"));
         m_linkToggleBtn->setStyleSheet(
             "QPushButton { background-color: rgba(16, 185, 129, 0.18); color: #34D399; "
             "border: 1px solid #059669; border-radius: 5px; font-weight: bold; padding: 4px 12px; }"
             "QPushButton:hover { background-color: rgba(16, 185, 129, 0.30); }"
         );
-        m_syncStatusLabel->setText("Menu déroulant en haut de chaque fenêtre = choisir Bible, Commentaires, Dictionnaire, IA ou Notes");
+        m_syncStatusLabel->setText(
+            SwordEngine::uiTr("Utilisez ➕⬇ / ➕➡ / ✕ en haut à droite de chaque fenêtre pour ajouter ou fermer des fenêtres",
+                              "Use ➕⬇ / ➕➡ / ✕ at the top-right of any window to add or close windows dynamically",
+                              "Use ➕⬇ / ➕➡ / ✕ arriba a la derecha de cualquier ventana para añadir o cerrar ventanas")
+        );
     } else {
-        m_linkToggleBtn->setText("🔓 Fenêtres Déliées");
+        m_linkToggleBtn->setText(SwordEngine::uiTr("🔓 Fenêtres Déliées", "🔓 Unlinked Windows", "🔓 Ventanas Desvinculadas"));
         m_linkToggleBtn->setStyleSheet(
             "QPushButton { background-color: rgba(245, 158, 11, 0.18); color: #FBBF24; "
             "border: 1px solid #D97706; border-radius: 5px; font-weight: bold; padding: 4px 12px; }"
             "QPushButton:hover { background-color: rgba(245, 158, 11, 0.30); }"
         );
-        m_syncStatusLabel->setText("Mode indépendant : chaque fenêtre peut afficher un passage ou un outil différent");
+        m_syncStatusLabel->setText(
+            SwordEngine::uiTr("Mode indépendant : chaque fenêtre peut afficher un passage ou un outil différent",
+                              "Independent mode: each window can display a different passage or tool",
+                              "Modo independiente: cada ventana puede mostrar un pasaje o herramienta diferente")
+        );
     }
 }
 

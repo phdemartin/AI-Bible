@@ -29,9 +29,21 @@ protected:
     void moveEvent(QMoveEvent* event) override;
 
 private:
+    struct DynamicSplitRecord {
+        int targetPaneIndex = 0;
+        Qt::Orientation orientation = Qt::Vertical;
+        UniversalPaneWidget* createdPane = nullptr;
+        QSplitter* createdSplitter = nullptr;
+    };
+
+    int paneCount() const;
     UniversalPaneWidget* paneAt(int index) const;
     bool isPaneActiveInLayout(int index) const;
     int pickFallbackActivePane(int excludeIndex = -1, int preferredIndex = -1) const;
+    void connectPaneSignals(UniversalPaneWidget* p);
+    UniversalPaneWidget* splitPane(UniversalPaneWidget* sourcePane, Qt::Orientation orientation, const QString& initialMode, bool recordAndSave = true);
+    void closePane(UniversalPaneWidget* targetPane);
+    void clearDynamicSplits();
     void applyWorkspaceLayout(const WorkspaceLayoutConfig& cfg, bool applyScreenGeometry, bool updatePaneModes);
 
     QStringList collectActiveBibles() const;
@@ -42,6 +54,7 @@ private:
     void applyStylePalette(const PaneStyle& style);
     void applySavedSplitterSizes();
     void navigateTo(const QString& swordBook, int chapter, int verse, bool recordHistory = true);
+    void openReferenceInSpecificPane(int targetPaneIndex, const QString& swordKey, const QString& preferredBibleMod = QString(), int sourcePaneIndex = 0);
     void loadSettings();
     void saveSettings() const;
     QString settingsFilePath() const;
@@ -54,6 +67,7 @@ private:
     CenterScreenWidget* m_centerScreen;
     RightScreenWidget* m_rightScreen;
 
+    QVector<DynamicSplitRecord> m_dynamicSplits;
     WorkspaceLayoutConfig m_layoutConfig;
     bool m_needsInitialLayoutPrompt = false;
 
