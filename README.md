@@ -4,8 +4,8 @@
 
 ## ✨ Fonctionnalités principales
 
-- **📐 Mises en page modulables (1 ou 2 écrans)** :
-  - Choix visuel au démarrage (ou à tout moment via le bouton **« 📐 Mise en page »**) : *2 Colonnes*, *3 Fenêtres Mixtes (1 Écran)*, *4 Fenêtres Mixtes*, *3 Colonnes Côte à Côte* ou *4 Colonnes Studio (Double Écran)*.
+- **📐 Mises en page modulables (1,2 ou 3 écrans)** :
+  - Choix visuel au démarrage (ou à tout moment via le bouton **« 📐 Mise en page »**) : *2 Colonnes*, *3 Fenêtres Mixtes (1 Écran)*, *4 Fenêtres Mixtes*, *3 Colonnes Côte à Côte* ou *4 Colonnes Studio (Double ou triple Écrans)*.
   - Chacune des 4 fenêtres est **100 % interchangeable** : 📖 Bible, 📚 Commentaires & TSK, 🏛️ Dictionnaire Grec/Hébreu Strong, 🤖 IA Gemini & Sources, ou 📝 Notes Personnelles.
 - **📥 Téléchargeur intégré de Modules SWORD (`~/.sword`)** :
   - Accès direct aux 15 dépôts officiels (**CrossWire**, **eBible.org**, **STEP Bible**, **Xiphos**, **Bible.org**, **Lockman**, **IBT**, etc.).
