@@ -20,13 +20,13 @@
 #include <QTimer>
 #include <algorithm>
 
-MainWindow::MainWindow(QWidget* parent)
+MainWindow::MainWindow(QWidget* parent, SwordEngine::ProgressCallback progressCb)
     : QMainWindow(parent)
-    , m_engine(std::make_unique<SwordEngine>(QDir::homePath() + "/.sword"))
+    , m_engine(std::make_unique<SwordEngine>(QDir::homePath() + "/.sword", progressCb))
     , m_gemini(new GeminiClient(this))
 {
     setObjectName("BibleStudyStudioMainWindow");
-    setWindowTitle("Logos & Lumière — Studio Biblique");
+    setWindowTitle("AI Bible — Logos & Lumière");
     setMinimumSize(960, 600);
     resize(1880, 1020);
 
@@ -64,8 +64,25 @@ MainWindow::MainWindow(QWidget* parent)
         "}"
     );
 
+    if (progressCb) {
+        progressCb(79, SwordEngine::uiTr("Construction de la Bibliothèque (Bibles, Commentaires, Lexiques)...",
+                                         "Building Library tree (Bibles, Commentaries, Lexicons)...",
+                                         "Construyendo la Biblioteca (Biblias, Comentarios, Léxicos)..."));
+    }
     m_leftScreen = new LeftScreenWidget(m_engine.get(), this);
+
+    if (progressCb) {
+        progressCb(85, SwordEngine::uiTr("Initialisation des Fenêtres d'étude 1 & 2...",
+                                         "Initializing Study Windows 1 & 2...",
+                                         "Inicializando Ventanas de estudio 1 y 2..."));
+    }
     m_centerScreen = new CenterScreenWidget(m_engine.get(), m_gemini, this);
+
+    if (progressCb) {
+        progressCb(91, SwordEngine::uiTr("Initialisation des Fenêtres d'étude 3 & 4 (Dictionnaire & IA)...",
+                                         "Initializing Study Windows 3 & 4 (Dictionary & AI)...",
+                                         "Inicializando Ventanas de estudio 3 y 4 (Diccionario e IA)..."));
+    }
     m_rightScreen = new RightScreenWidget(m_engine.get(), m_gemini, this);
 
     m_mainHorizontalSplitter->addWidget(m_leftScreen);
@@ -227,9 +244,19 @@ MainWindow::MainWindow(QWidget* parent)
         if (p) connectPaneSignals(p);
     }
 
+    if (progressCb) {
+        progressCb(96, SwordEngine::uiTr("Restauration de la disposition et du chapitre actif...",
+                                         "Restoring workspace layout and active chapter...",
+                                         "Restaurando disposición y capítulo activo..."));
+    }
     loadSettings();
     if (paneAt(0)) {
         applyStylePalette(paneAt(0)->paneStyle());
+    }
+    if (progressCb) {
+        progressCb(100, SwordEngine::uiTr("Prêt ! Ouverture de AI Bible — Logos & Lumière...",
+                                          "Ready! Opening AI Bible — Logos & Light...",
+                                          "¡Listo! Abriendo AI Bible — Logos y Luz..."));
     }
 
     // Ré-appliquer les largeurs et hauteurs sauvegardées après l'affichage initial de la fenêtre
@@ -246,7 +273,13 @@ MainWindow::MainWindow(QWidget* parent)
         });
     }
 
-    statusBar()->showMessage("Prêt — Utilisez les boutons ➕⬇, ➕➡ et ✕ en haut à droite de chaque fenêtre pour ajouter ou fermer des fenêtres à volonté.");
+    statusBar()->showMessage(
+        SwordEngine::uiTr(
+            "Prêt — Utilisez les boutons ➕⬇, ➕➡ et ✕ en haut à droite de chaque fenêtre pour ajouter ou fermer des fenêtres à volonté.",
+            "Ready — Use the ➕⬇, ➕➡ and ✕ buttons at the top-right of any window to add or close windows dynamically.",
+            "Listo — Utilice los botones ➕⬇, ➕➡ y ✕ arriba a la derecha de cada ventana para añadir o cerrar ventanas."
+        )
+    );
 }
 
 MainWindow::~MainWindow() = default;

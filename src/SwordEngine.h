@@ -6,6 +6,7 @@
 #include <QMap>
 #include <QHash>
 #include <QJsonObject>
+#include <functional>
 #include <memory>
 
 namespace sword {
@@ -104,11 +105,13 @@ struct PersonalNote {
 
 class SwordEngine {
 public:
-    explicit SwordEngine(const QString& swordPath = QString());
+    using ProgressCallback = std::function<void(int percent, const QString& statusMessage)>;
+
+    explicit SwordEngine(const QString& swordPath = QString(), ProgressCallback progressCb = nullptr);
     ~SwordEngine();
 
     // Module discovery & hot-reload after installing/removing SWORD modules
-    void reloadModules();
+    void reloadModules(ProgressCallback progressCb = nullptr);
     QString swordPath() const { return m_swordPath; }
     sword::SWMgr* rawMgr() const { return m_mgr.get(); }
     QVector<ModuleInfo> getBibleModules() const { return m_bibles; }
@@ -227,7 +230,7 @@ public:
 
 private:
     void initBooks();
-    void initModules();
+    void initModules(ProgressCallback progressCb = nullptr);
     QString normalizeStrongKey5(const QString& numPart) const;
     QString normalizeStrongKey4(const QString& numPart) const;
     QString cleanRawEntryToPlain(const QString& rawOrStrip) const;

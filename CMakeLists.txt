@@ -12,7 +12,7 @@ pkg_check_modules(SWORD REQUIRED sword)
 
 find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets Network)
 
-add_executable(bible_study_studio
+set(APP_SOURCES
     src/main.cpp
     src/SwordEngine.h
     src/SwordEngine.cpp
@@ -26,7 +26,14 @@ add_executable(bible_study_studio
     src/LayoutSelectorDialog.cpp
     src/MainWindow.h
     src/MainWindow.cpp
+    resources/resources.qrc
 )
+
+if(WIN32)
+    list(APPEND APP_SOURCES resources/app_icon.rc)
+endif()
+
+add_executable(bible_study_studio ${APP_SOURCES})
 
 target_include_directories(bible_study_studio PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src

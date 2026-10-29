@@ -133,7 +133,9 @@ find "$PKG_DIR" -maxdepth 1 -name "*.dll" | while read -r top_dll; do
     copy_dll_deps "$top_dll"
 done
 
-# Inclure l icône, le certificat CA (pour libcurl/SWORD), et un guide LISEZMOI
+# Inclure l icône, l écran de démarrage, le certificat CA (pour libcurl/SWORD), et un guide LISEZMOI
+cp /workspace/resources/icon.png "$PKG_DIR/icon.png"
+cp /workspace/resources/Splash_screen.png "$PKG_DIR/Splash_screen.png"
 cp /workspace/ai_bible_icon.svg "$PKG_DIR/ai_bible_icon.svg"
 if [ -f /etc/pki/tls/certs/ca-bundle.crt ]; then
     cp -L /etc/pki/tls/certs/ca-bundle.crt "$PKG_DIR/ca-bundle.crt"

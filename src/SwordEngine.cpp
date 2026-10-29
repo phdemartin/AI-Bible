@@ -141,19 +141,45 @@ QString buildBodyCss(const PaneStyle& style) {
 
 } // namespace
 
-SwordEngine::SwordEngine(const QString& swordPath)
+SwordEngine::SwordEngine(const QString& swordPath, ProgressCallback progressCb)
     : m_swordPath(swordPath.isEmpty() ? (QDir::homePath() + "/.sword") : swordPath)
 {
     QDir().mkpath(m_swordPath + "/mods.d");
     QDir().mkpath(m_swordPath + "/modules");
+    if (progressCb) {
+        progressCb(4, uiTr("Initialisation de la table des 66 livres bibliques...",
+                           "Initializing 66 biblical books index...",
+                           "Inicializando el índice de los 66 libros bíblicos..."));
+    }
     initBooks();
-    reloadModules();
+    reloadModules(progressCb);
+    if (progressCb) {
+        progressCb(76, uiTr("Chargement des fiches de notes personnelles...",
+                            "Loading personal study notes...",
+                            "Cargando notas de estudio personales..."));
+    }
     loadPersonalNotes();
 }
 
 SwordEngine::~SwordEngine() = default;
 
-void SwordEngine::reloadModules() {
+void SwordEngine::reloadModules(ProgressCallback progressCb) {
+    QDir modsDir(m_swordPath + "/mods.d");
+    const QStringList confFiles = modsDir.entryList({"*.conf"}, QDir::Files);
+    const int confCount = confFiles.size();
+
+    if (progressCb) {
+        progressCb(8, uiTr(QString("Scan du dossier des modules (%1 fichiers .conf détectés)...").arg(confCount),
+                           QString("Scanning modules directory (%1 .conf files detected)...").arg(confCount),
+                           QString("Escaneando carpeta de módulos (%1 archivos .conf detectados)...").arg(confCount)));
+    }
+
+    if (progressCb) {
+        progressCb(14, uiTr(QString("Chargement du moteur SWORD HTML & Strong (%1 modules)...").arg(confCount),
+                            QString("Loading SWORD HTML & Strong's engine (%1 modules)...").arg(confCount),
+                            QString("Cargando motor SWORD HTML y Strong (%1 módulos)...").arg(confCount)));
+    }
+
     m_mgr = std::make_unique<SWMgr>(
         m_swordPath.toUtf8().constData(),
         true,
@@ -163,6 +189,12 @@ void SwordEngine::reloadModules() {
     m_mgr->setGlobalOption("Morphological Tags", "On");
     m_mgr->setGlobalOption("Footnotes", "On");
     m_mgr->setGlobalOption("Headings", "On");
+
+    if (progressCb) {
+        progressCb(24, uiTr("Initialisation du moteur de recherche plein texte...",
+                            "Initializing full-text search engine...",
+                            "Inicializando motor de búsqueda de texto completo..."));
+    }
 
     m_plainMgr = std::make_unique<SWMgr>(
         m_swordPath.toUtf8().constData(),
@@ -176,6 +208,11 @@ void SwordEngine::reloadModules() {
     // Load direct French TSK if ~/.sword/modules/comments/rawcom/Fr_tsk/ exists
     QString frTskPath = m_swordPath + "/modules/comments/rawcom/Fr_tsk/";
     if (QFileInfo::exists(frTskPath + "nt") || QFileInfo::exists(frTskPath + "ot")) {
+        if (progressCb) {
+            progressCb(30, uiTr("Chargement du Trésor de la Connaissance Biblique (TSK)...",
+                                "Loading Treasury of Scripture Knowledge (TSK)...",
+                                "Cargando el Tesoro del Conocimiento Bíblico (TSK)..."));
+        }
         m_frTskDirect = std::make_unique<RawCom>(
             frTskPath.toUtf8().constData(),
             "Fr_Tsk",
@@ -185,7 +222,7 @@ void SwordEngine::reloadModules() {
         m_frTskDirect->addEncodingFilter(new Latin1UTF8());
     }
 
-    initModules();
+    initModules(progressCb);
 }
 
 void SwordEngine::initBooks() {
@@ -286,7 +323,7 @@ void SwordEngine::initBooks() {
     }
 }
 
-void SwordEngine::initModules() {
+void SwordEngine::initModules(ProgressCallback progressCb) {
     m_bibles.clear();
     m_commentaries.clear();
     m_lexicons.clear();
@@ -337,7 +374,11 @@ void SwordEngine::initModules() {
         {"Strong Zodiates (NT)", "Étude Lexicale Grecque Spiros Zodhiates (NT)"}
     };
 
+    const int totalMods = std::max(1, static_cast<int>(m_mgr->Modules.size()));
+    int curIdx = 0;
+
     for (auto const& [modName, mod] : m_mgr->Modules) {
+        ++curIdx;
         if (!mod) continue;
         ModuleInfo info;
         info.name = QString::fromUtf8(modName.c_str());
@@ -383,6 +424,18 @@ void SwordEngine::initModules() {
             m_commentaries.push_back(info);
         } else if (info.type == "Lexicons / Dictionaries") {
             m_lexicons.push_back(info);
+        }
+
+        if (progressCb) {
+            int pct = 32 + (curIdx * 42) / totalMods;
+            QString shortDesc = info.description;
+            if (shortDesc.size() > 48) shortDesc = shortDesc.left(45) + "...";
+            progressCb(
+                pct,
+                uiTr(QString("Scan du module [%1/%2] : %3 — %4").arg(curIdx).arg(totalMods).arg(info.name, shortDesc),
+                     QString("Scanning module [%1/%2]: %3 — %4").arg(curIdx).arg(totalMods).arg(info.name, shortDesc),
+                     QString("Escaneando módulo [%1/%2]: %3 — %4").arg(curIdx).arg(totalMods).arg(info.name, shortDesc))
+            );
         }
     }
 
