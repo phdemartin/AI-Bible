@@ -56,21 +56,25 @@ if [ ! -d sword-1.9.0 ]; then
 fi
 cd sword-1.9.0
 
-# Assurer la compatibilité CMake moderne et MinGW-w64 + corriger les bugs Windows de FileMgr::removeDir et ZipCompress
-sed -i "s/cmake_minimum_required(VERSION 2.6.0)/cmake_minimum_required(VERSION 3.5)/g" CMakeLists.txt || true
-sed -i "s/FileMgr::removeFile(targetDir);/FileMgr::removeFile(targetDir); _wrmdir((const wchar_t *)utf8ToWChar(targetDir).getRawData());/g" src/mgr/filemgr.cpp || true
-sed -i "s/FileMgr::createPathAndFile(target+\"\/globals.conf\");/FileMgr::closeFile(FileMgr::createPathAndFile(target+\"\/globals.conf\"));/g" src/mgr/installmgr.cpp || true
+if [ ! -f build-win64/libsword.dll ]; then
+    # Assurer la compatibilité CMake moderne et MinGW-w64 + corriger les bugs Windows de FileMgr::removeDir et ZipCompress
+    sed -i "s/cmake_minimum_required(VERSION 2.6.0)/cmake_minimum_required(VERSION 3.5)/g" CMakeLists.txt || true
+    sed -i "s/FileMgr::removeFile(targetDir);/FileMgr::removeFile(targetDir); _wrmdir((const wchar_t *)utf8ToWChar(targetDir).getRawData());/g" src/mgr/filemgr.cpp || true
+    sed -i "s/FileMgr::createPathAndFile(target+\"\/globals.conf\");/FileMgr::closeFile(FileMgr::createPathAndFile(target+\"\/globals.conf\"));/g" src/mgr/installmgr.cpp || true
 
-mkdir -p build-win64 && cd build-win64
-mingw64-cmake .. \
-    -DCMAKE_BUILD_TYPE=Release \
-    -DLIBSWORD_LIBRARY_TYPE=Shared \
-    -DSWORD_BUILD_TESTS=No \
-    -DSWORD_BUILD_EXAMPLES=No \
-    -DSWORD_BUILD_UTILS=No \
-    -DCMAKE_C_FLAGS="-DSTDC_HEADERS=1 -Wno-error=implicit-function-declaration -Wno-implicit-function-declaration" \
-    -DCMAKE_CXX_FLAGS="-fpermissive -Wno-narrowing -Wno-deprecated-declarations -include cstdint"
-make -j$(nproc)
+    mkdir -p build-win64 && cd build-win64
+    mingw64-cmake .. \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DLIBSWORD_LIBRARY_TYPE=Shared \
+        -DSWORD_BUILD_TESTS=No \
+        -DSWORD_BUILD_EXAMPLES=No \
+        -DSWORD_BUILD_UTILS=No \
+        -DCMAKE_C_FLAGS="-DSTDC_HEADERS=1 -Wno-error=implicit-function-declaration -Wno-implicit-function-declaration" \
+        -DCMAKE_CXX_FLAGS="-fpermissive -Wno-narrowing -Wno-deprecated-declarations -include cstdint"
+    make -j$(nproc)
+else
+    cd build-win64
+fi
 make install
 
 # Vérifier ou générer sword.pc pour pkg-config sous MinGW

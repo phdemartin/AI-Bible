@@ -20,6 +20,13 @@
 #include <QJsonArray>
 #include <QDateTime>
 #include <QLocale>
+#include <QBuffer>
+#include <QIcon>
+#include <QPainter>
+#include <QPainterPath>
+#include <QPixmap>
+#include <QPolygonF>
+#include <QtMath>
 #include <algorithm>
 
 using namespace sword;
@@ -540,18 +547,12 @@ QString SwordEngine::localizedBookName(const BookInfo& b) {
 
 QString SwordEngine::languageFlag(const QString& langCode) {
     QString c = langCode.trimmed().toLower().section('-', 0, 0).section('_', 0, 0);
-    static const QMap<QString, QString> flags = {
-        {"fr", "🇫🇷"}, {"en", "🇬🇧"}, {"es", "🇪🇸"}, {"de", "🇩🇪"}, {"pt", "🇵🇹"},
-        {"it", "🇮🇹"}, {"nl", "🇳🇱"}, {"ru", "🇷🇺"}, {"uk", "🇺🇦"}, {"pl", "🇵🇱"},
-        {"ro", "🇷🇴"}, {"cs", "🇨🇿"}, {"sk", "🇸🇰"}, {"hu", "🇭🇺"}, {"bg", "🇧🇬"},
-        {"sr", "🇷🇸"}, {"hr", "🇭🇷"}, {"el", "🇬🇷"}, {"grc", "🏛️"}, {"he", "🇮🇱"},
-        {"hbo", "🕎"}, {"la", "🏛️"}, {"ar", "🇸🇦"}, {"fa", "🇮🇷"}, {"tr", "🇹🇷"},
-        {"zh", "🇨🇳"}, {"ja", "🇯🇵"}, {"ko", "🇰🇷"}, {"vi", "🇻🇳"}, {"th", "🇹🇭"},
-        {"id", "🇮🇩"}, {"ms", "🇲🇾"}, {"tl", "🇵🇭"}, {"hi", "🇮🇳"}, {"ta", "🇮🇳"},
-        {"sw", "🇰🇪"}, {"af", "🇿🇦"}, {"sv", "🇸🇪"}, {"no", "🇳🇴"}, {"nb", "🇳🇴"},
-        {"da", "🇩🇰"}, {"fi", "🇫🇮"}, {"eo", "🌍"}
-    };
-    return flags.value(c, "🌐");
+    if (c == "grc" || c == "la" || c == "syc" || c == "cop" || c == "got") return "🏛️";
+    if (c == "he" || c == "hbo") return "🕎";
+    if (c == "auto") return "🔄";
+    // Ne pas renvoyer d'emojis Regional Indicator (🇫🇷, 🇪🇸, 🇬🇧) en texte brut car Windows 10/11
+    // les affiche sous forme de lettres "FR", "ES", "GB" ; les vrais drapeaux sont dessinés via languageFlagIcon() / languageFlagHtml().
+    return QString();
 }
 
 QString SwordEngine::languageNativeName(const QString& langCode) {
@@ -563,12 +564,19 @@ QString SwordEngine::languageNativeName(const QString& langCode) {
         {"sk", "Slovenčina"}, {"hu", "Magyar"}, {"bg", "Български"}, {"sr", "Српски"},
         {"hr", "Hrvatski"}, {"el", "Ελληνικά"}, {"grc", "Grec Ancien (Koïné)"},
         {"he", "Hébreu / עברית"}, {"hbo", "Hébreu Biblique"}, {"la", "Latin"},
-        {"ar", "العربية (Arabe)"}, {"fa", "فارسی (Persan)"}, {"tr", "Türkçe"},
-        {"zh", "中文 (Chinois)"}, {"ja", "日本語 (Japonais)"}, {"ko", "한국어 (Coréen)"},
-        {"vi", "Tiếng Việt"}, {"th", "ไทย"}, {"id", "Bahasa Indonesia"},
-        {"tl", "Tagalog"}, {"hi", "हिन्दी (Hindi)"}, {"sw", "Kiswahili"},
-        {"af", "Afrikaans"}, {"sv", "Svenska"}, {"no", "Norsk"}, {"nb", "Norsk"},
-        {"da", "Dansk"}, {"fi", "Suomi"}, {"eo", "Esperanto"}
+        {"ht", "Créole Haïtien"}, {"ar", "العربية (Arabe)"}, {"fa", "فارسی (Persan)"},
+        {"tr", "Türkçe"}, {"zh", "中文 (Chinois)"}, {"ja", "日本語 (Japonais)"},
+        {"ko", "한국어 (Coréen)"}, {"vi", "Tiếng Việt"}, {"th", "ไทย"},
+        {"id", "Bahasa Indonesia"}, {"ms", "Bahasa Melayu"}, {"tl", "Tagalog"},
+        {"hi", "हिन्दी (Hindi)"}, {"ta", "தமிழ் (Tamoul)"}, {"sw", "Kiswahili"},
+        {"mg", "Malagasy"}, {"am", "አማርኛ (Amharique)"}, {"af", "Afrikaans"},
+        {"sv", "Svenska"}, {"no", "Norsk"}, {"nb", "Norsk"}, {"da", "Dansk"},
+        {"fi", "Suomi"}, {"is", "Íslenska"}, {"et", "Eesti"}, {"lv", "Latviešu"},
+        {"lt", "Lietuvių"}, {"sq", "Shqip"}, {"hy", "Հայերեն"}, {"ka", "ქართული"},
+        {"eo", "Esperanto"}, {"ca", "Català"}, {"eu", "Euskara"}, {"br", "Brezhoneg"},
+        {"co", "Corsu"}, {"yo", "Yorùbá"}, {"ha", "Hausa"}, {"ig", "Igbo"},
+        {"zu", "isiZulu"}, {"ln", "Lingála"}, {"rw", "Ikinyarwanda"}, {"rn", "Ikirundi"},
+        {"wo", "Wolof"}, {"bm", "Bamanankan"}, {"my", "မြန်မာ"}, {"km", "ខ្មែរ"}, {"lo", "ລາວ"}
     };
     if (names.contains(c)) return names.value(c);
     return c.toUpper();
@@ -577,8 +585,378 @@ QString SwordEngine::languageNativeName(const QString& langCode) {
 QString SwordEngine::languageFlagAndName(const QString& langCode) {
     QString c = langCode.trimmed().toLower();
     if (c == "auto") return uiTr("🔄 Auto (selon la Bible active)", "🔄 Auto (from active Bible)", "🔄 Auto (según la Biblia activa)");
-    if (c == "fr_es") return "🇫🇷+🇪🇸 Français & Español";
-    return QString("%1 %2").arg(languageFlag(c), languageNativeName(c));
+    if (c == "fr_es") return "Français & Español";
+    return languageNativeName(c);
+}
+
+QPixmap SwordEngine::languageFlagPixmap(const QString& langCode, int width, int height) {
+    const int W = std::max(16, width);
+    const int H = std::max(12, height);
+    QPixmap pix(W, H);
+    pix.fill(Qt::transparent);
+
+    QPainter p(&pix);
+    p.setRenderHint(QPainter::Antialiasing, true);
+    p.setRenderHint(QPainter::TextAntialiasing, true);
+
+    const qreal rx = std::max(2.0, H * 0.14);
+    QPainterPath clipPath;
+    clipPath.addRoundedRect(QRectF(0.5, 0.5, W - 1.0, H - 1.0), rx, rx);
+    p.setClipPath(clipPath);
+
+    QString raw = langCode.trimmed().toLower();
+    QString c = (raw == "fr_es" || raw == "auto") ? raw : raw.section('-', 0, 0).section('_', 0, 0);
+
+    auto fillV3 = [&](const QColor& c1, const QColor& c2, const QColor& c3) {
+        p.fillRect(QRectF(0, 0, W / 3.0 + 0.5, H), c1);
+        p.fillRect(QRectF(W / 3.0, 0, W / 3.0 + 0.5, H), c2);
+        p.fillRect(QRectF(2.0 * W / 3.0, 0, W - 2.0 * W / 3.0, H), c3);
+    };
+    auto fillH3 = [&](const QColor& c1, const QColor& c2, const QColor& c3) {
+        p.fillRect(QRectF(0, 0, W, H / 3.0 + 0.5), c1);
+        p.fillRect(QRectF(0, H / 3.0, W, H / 3.0 + 0.5), c2);
+        p.fillRect(QRectF(0, 2.0 * H / 3.0, W, H - 2.0 * H / 3.0), c3);
+    };
+    auto fillH2 = [&](const QColor& c1, const QColor& c2) {
+        p.fillRect(QRectF(0, 0, W, H / 2.0 + 0.5), c1);
+        p.fillRect(QRectF(0, H / 2.0, W, H - H / 2.0), c2);
+    };
+    auto drawNordicCross = [&](const QColor& bg, const QColor& cross, const QColor& border = QColor()) {
+        p.fillRect(QRectF(0, 0, W, H), bg);
+        qreal cx = W * 0.34;
+        qreal cy = H * 0.50;
+        if (border.isValid()) {
+            qreal bw = H * 0.28;
+            p.fillRect(QRectF(cx - bw * 0.5, 0, bw, H), border);
+            p.fillRect(QRectF(0, cy - bw * 0.5, W, bw), border);
+        }
+        qreal cw = H * 0.16;
+        p.fillRect(QRectF(cx - cw * 0.5, 0, cw, H), cross);
+        p.fillRect(QRectF(0, cy - cw * 0.5, W, cw), cross);
+    };
+
+    if (c == "fr" || c == "br" || c == "co" || c == "gcf") {
+        fillV3(QColor("#002395"), QColor("#FFFFFF"), QColor("#ED2939"));
+    } else if (c == "es" || c == "ca" || c == "eu" || c == "gl" || c == "ast") {
+        p.fillRect(QRectF(0, 0, W, H), QColor("#AA151B"));
+        p.fillRect(QRectF(0, H * 0.25, W, H * 0.50), QColor("#F1BF00"));
+        p.setPen(Qt::NoPen);
+        p.setBrush(QColor("#AA151B"));
+        p.drawEllipse(QPointF(W * 0.30, H * 0.50), H * 0.11, H * 0.13);
+    } else if (c == "fr_es") {
+        // Moitié gauche : France, Moitié droite : Espagne
+        p.fillRect(QRectF(0, 0, W * 0.17, H), QColor("#002395"));
+        p.fillRect(QRectF(W * 0.17, 0, W * 0.17, H), QColor("#FFFFFF"));
+        p.fillRect(QRectF(W * 0.34, 0, W * 0.16, H), QColor("#ED2939"));
+        p.fillRect(QRectF(W * 0.50, 0, W * 0.50, H), QColor("#AA151B"));
+        p.fillRect(QRectF(W * 0.50, H * 0.25, W * 0.50, H * 0.50), QColor("#F1BF00"));
+    } else if (c == "en" || c == "ang" || c == "enm" || c == "sco") {
+        // Union Jack (Royaume-Uni)
+        p.fillRect(QRectF(0, 0, W, H), QColor("#012169"));
+        p.setPen(QPen(QColor("#FFFFFF"), H * 0.20));
+        p.drawLine(QPointF(0, 0), QPointF(W, H));
+        p.drawLine(QPointF(0, H), QPointF(W, 0));
+        p.setPen(QPen(QColor("#C8102E"), H * 0.09));
+        p.drawLine(QPointF(0, 0), QPointF(W, H));
+        p.drawLine(QPointF(0, H), QPointF(W, 0));
+        p.setPen(Qt::NoPen);
+        p.fillRect(QRectF(0, H * 0.34, W, H * 0.32), QColor("#FFFFFF"));
+        p.fillRect(QRectF(W * 0.38, 0, W * 0.24, H), QColor("#FFFFFF"));
+        p.fillRect(QRectF(0, H * 0.40, W, H * 0.20), QColor("#C8102E"));
+        p.fillRect(QRectF(W * 0.43, 0, W * 0.14, H), QColor("#C8102E"));
+    } else if (c == "de" || c == "nds" || c == "gmh" || c == "goh" || c == "gsw") {
+        fillH3(QColor("#111111"), QColor("#DD0000"), QColor("#FFCE00"));
+    } else if (c == "pt") {
+        p.fillRect(QRectF(0, 0, W * 0.40, H), QColor("#006600"));
+        p.fillRect(QRectF(W * 0.40, 0, W * 0.60, H), QColor("#FF0000"));
+        p.setPen(QPen(QColor("#FFCC00"), 1.5));
+        p.setBrush(QColor("#FF0000"));
+        p.drawEllipse(QPointF(W * 0.40, H * 0.50), H * 0.20, H * 0.20);
+    } else if (c == "it" || c == "scn" || c == "nap") {
+        fillV3(QColor("#009246"), QColor("#FFFFFF"), QColor("#CE2B37"));
+    } else if (c == "nl" || c == "fy") {
+        fillH3(QColor("#AE1C28"), QColor("#FFFFFF"), QColor("#21468B"));
+    } else if (c == "ru") {
+        fillH3(QColor("#FFFFFF"), QColor("#0039A6"), QColor("#D52B1E"));
+    } else if (c == "uk") {
+        fillH2(QColor("#0057B7"), QColor("#FFD700"));
+    } else if (c == "pl") {
+        fillH2(QColor("#FFFFFF"), QColor("#DC143C"));
+    } else if (c == "ro" || c == "mo") {
+        fillV3(QColor("#002B7F"), QColor("#FCD116"), QColor("#CE1126"));
+    } else if (c == "ht") {
+        fillH2(QColor("#00209F"), QColor("#D21034"));
+        p.fillRect(QRectF(W * 0.36, H * 0.34, W * 0.28, H * 0.32), QColor("#FFFFFF"));
+        p.fillRect(QRectF(W * 0.42, H * 0.40, W * 0.16, H * 0.20), QColor("#16A34A"));
+    } else if (c == "el") {
+        // Grèce moderne (9 bandes bleues et blanches + canton à croix blanche)
+        p.fillRect(QRectF(0, 0, W, H), QColor("#0D5EAF"));
+        qreal sh = H / 9.0;
+        for (int i = 1; i < 9; i += 2) {
+            p.fillRect(QRectF(0, i * sh, W, sh), QColor("#FFFFFF"));
+        }
+        qreal cw = sh * 5.0;
+        p.fillRect(QRectF(0, 0, cw, cw), QColor("#0D5EAF"));
+        p.fillRect(QRectF(cw * 0.40, 0, cw * 0.20, cw), QColor("#FFFFFF"));
+        p.fillRect(QRectF(0, cw * 0.40, cw, cw * 0.20), QColor("#FFFFFF"));
+    } else if (c == "grc") {
+        // Grec ancien / Koïné : Bleu Égée & Or avec fronton classique grec
+        p.fillRect(QRectF(0, 0, W, H), QColor("#0C4A6E"));
+        p.fillRect(QRectF(0, 0, W, H * 0.14), QColor("#F59E0B"));
+        p.fillRect(QRectF(0, H * 0.86, W, H * 0.14), QColor("#F59E0B"));
+        p.setPen(Qt::NoPen);
+        p.setBrush(QColor("#FDE68A"));
+        QPolygonF roof;
+        roof << QPointF(W * 0.24, H * 0.36) << QPointF(W * 0.50, H * 0.20) << QPointF(W * 0.76, H * 0.36);
+        p.drawPolygon(roof);
+        for (int i = 0; i < 3; ++i) {
+            qreal x = W * (0.31 + i * 0.16);
+            p.fillRect(QRectF(x, H * 0.38, W * 0.06, H * 0.36), QColor("#FFFBEB"));
+        }
+        p.fillRect(QRectF(W * 0.24, H * 0.74, W * 0.52, H * 0.07), QColor("#FDE68A"));
+    } else if (c == "he" || c == "hbo" || c == "yi" || c == "arc") {
+        // Hébreu biblique / ancien : Fond ivoire/blanc, deux bandes bleues et Étoile de David bleue/or
+        p.fillRect(QRectF(0, 0, W, H), QColor("#FFFFFF"));
+        p.fillRect(QRectF(0, H * 0.10, W, H * 0.14), QColor("#0038B8"));
+        p.fillRect(QRectF(0, H * 0.76, W, H * 0.14), QColor("#0038B8"));
+        QPointF center(W * 0.50, H * 0.50);
+        qreal r = H * 0.23;
+        QPolygonF t1, t2;
+        for (int i = 0; i < 3; ++i) {
+            qreal a1 = qDegreesToRadians(-90.0 + i * 120.0);
+            qreal a2 = qDegreesToRadians(90.0 + i * 120.0);
+            t1 << QPointF(center.x() + r * qCos(a1), center.y() + r * qSin(a1));
+            t2 << QPointF(center.x() + r * qCos(a2), center.y() + r * qSin(a2));
+        }
+        p.setBrush(Qt::NoBrush);
+        p.setPen(QPen(QColor("#0038B8"), std::max(1.4, H * 0.055)));
+        p.drawPolygon(t1);
+        p.drawPolygon(t2);
+    } else if (c == "la" || c == "syc" || c == "cop" || c == "got" || c == "cu" || c == "gez") {
+        // Latin / Langues anciennes : Pourpre impérial & Or avec cartouche
+        p.fillRect(QRectF(0, 0, W, H), QColor("#7F1D1D"));
+        p.fillRect(QRectF(0, 0, W, H * 0.14), QColor("#F59E0B"));
+        p.fillRect(QRectF(0, H * 0.86, W, H * 0.14), QColor("#F59E0B"));
+        QFont f("Sans", std::max(6, int(H * 0.34)), QFont::Bold);
+        p.setFont(f);
+        p.setPen(QColor("#FEF08A"));
+        p.drawText(QRectF(0, 0, W, H), Qt::AlignCenter, c.left(3).toUpper());
+    } else if (c == "ar" || c == "arz" || c == "aeb" || c == "ary") {
+        p.fillRect(QRectF(0, 0, W, H), QColor("#006C35"));
+        p.fillRect(QRectF(W * 0.25, H * 0.66, W * 0.50, H * 0.08), QColor("#FFFFFF"));
+        p.setPen(QPen(QColor("#FFFFFF"), 1.6));
+        p.drawArc(QRectF(W * 0.35, H * 0.24, W * 0.30, H * 0.34), 30 * 16, 260 * 16);
+    } else if (c == "zh" || c == "yue" || c == "wuu" || c == "nan" || c == "hak") {
+        p.fillRect(QRectF(0, 0, W, H), QColor("#DE2910"));
+        p.setPen(Qt::NoPen);
+        p.setBrush(QColor("#FFDE00"));
+        p.drawEllipse(QPointF(W * 0.23, H * 0.32), H * 0.15, H * 0.15);
+        p.drawEllipse(QPointF(W * 0.42, H * 0.16), H * 0.05, H * 0.05);
+        p.drawEllipse(QPointF(W * 0.48, H * 0.26), H * 0.05, H * 0.05);
+        p.drawEllipse(QPointF(W * 0.48, H * 0.40), H * 0.05, H * 0.05);
+        p.drawEllipse(QPointF(W * 0.42, H * 0.50), H * 0.05, H * 0.05);
+    } else if (c == "ja") {
+        p.fillRect(QRectF(0, 0, W, H), QColor("#FFFFFF"));
+        p.setPen(Qt::NoPen);
+        p.setBrush(QColor("#BC002D"));
+        p.drawEllipse(QPointF(W * 0.50, H * 0.50), H * 0.27, H * 0.27);
+    } else if (c == "ko") {
+        p.fillRect(QRectF(0, 0, W, H), QColor("#FFFFFF"));
+        p.setPen(Qt::NoPen);
+        p.setBrush(QColor("#CD2E3A"));
+        p.drawPie(QRectF(W * 0.50 - H * 0.24, H * 0.26, H * 0.48, H * 0.48), 0, 180 * 16);
+        p.setBrush(QColor("#0047A0"));
+        p.drawPie(QRectF(W * 0.50 - H * 0.24, H * 0.26, H * 0.48, H * 0.48), 180 * 16, 180 * 16);
+    } else if (c == "vi") {
+        p.fillRect(QRectF(0, 0, W, H), QColor("#DA251D"));
+        p.setPen(Qt::NoPen);
+        p.setBrush(QColor("#FFFF00"));
+        p.drawEllipse(QPointF(W * 0.50, H * 0.50), H * 0.20, H * 0.20);
+    } else if (c == "tr" || c == "az" || c == "tk" || c == "ug") {
+        p.fillRect(QRectF(0, 0, W, H), QColor("#E30A17"));
+        p.setPen(Qt::NoPen);
+        p.setBrush(QColor("#FFFFFF"));
+        p.drawEllipse(QPointF(W * 0.43, H * 0.50), H * 0.24, H * 0.24);
+        p.setBrush(QColor("#E30A17"));
+        p.drawEllipse(QPointF(W * 0.48, H * 0.50), H * 0.19, H * 0.19);
+        p.setBrush(QColor("#FFFFFF"));
+        p.drawEllipse(QPointF(W * 0.64, H * 0.50), H * 0.08, H * 0.08);
+    } else if (c == "fa" || c == "ku" || c == "tg") {
+        fillH3(QColor("#239F40"), QColor("#FFFFFF"), QColor("#DA0000"));
+        p.setPen(Qt::NoPen);
+        p.setBrush(QColor("#DA0000"));
+        p.drawEllipse(QPointF(W * 0.50, H * 0.50), H * 0.11, H * 0.11);
+    } else if (c == "hi" || c == "ta" || c == "te" || c == "ml" || c == "kn" || c == "mr" || c == "gu" || c == "pa" || c == "bn") {
+        fillH3(QColor("#FF9933"), QColor("#FFFFFF"), QColor("#138808"));
+        p.setBrush(Qt::NoBrush);
+        p.setPen(QPen(QColor("#000080"), 1.4));
+        p.drawEllipse(QPointF(W * 0.50, H * 0.50), H * 0.12, H * 0.12);
+    } else if (c == "id") {
+        fillH2(QColor("#FF0000"), QColor("#FFFFFF"));
+    } else if (c == "tl" || c == "ceb" || c == "ilo" || c == "hil") {
+        fillH2(QColor("#0038A8"), QColor("#CE1126"));
+        QPolygonF tri;
+        tri << QPointF(0, 0) << QPointF(W * 0.44, H * 0.50) << QPointF(0, H);
+        p.setPen(Qt::NoPen);
+        p.setBrush(QColor("#FFFFFF"));
+        p.drawPolygon(tri);
+        p.setBrush(QColor("#FCD116"));
+        p.drawEllipse(QPointF(W * 0.16, H * 0.50), H * 0.11, H * 0.11);
+    } else if (c == "th") {
+        p.fillRect(QRectF(0, 0, W, H), QColor("#A51931"));
+        p.fillRect(QRectF(0, H * 0.17, W, H * 0.66), QColor("#F4F5F8"));
+        p.fillRect(QRectF(0, H * 0.33, W, H * 0.34), QColor("#2D2A4A"));
+    } else if (c == "cs") {
+        fillH2(QColor("#FFFFFF"), QColor("#D7141A"));
+        QPolygonF tri;
+        tri << QPointF(0, 0) << QPointF(W * 0.48, H * 0.50) << QPointF(0, H);
+        p.setPen(Qt::NoPen);
+        p.setBrush(QColor("#11457E"));
+        p.drawPolygon(tri);
+    } else if (c == "sk" || c == "sl") {
+        fillH3(QColor("#FFFFFF"), QColor("#0B4EA2"), QColor("#EE1C25"));
+    } else if (c == "hu") {
+        fillH3(QColor("#CD2A3E"), QColor("#FFFFFF"), QColor("#436F4D"));
+    } else if (c == "bg") {
+        fillH3(QColor("#FFFFFF"), QColor("#00966E"), QColor("#D62612"));
+    } else if (c == "sr") {
+        fillH3(QColor("#C6363C"), QColor("#0C4076"), QColor("#FFFFFF"));
+    } else if (c == "hr") {
+        fillH3(QColor("#FF0000"), QColor("#FFFFFF"), QColor("#171796"));
+        p.fillRect(QRectF(W * 0.42, H * 0.30, W * 0.16, H * 0.40), QColor("#FF0000"));
+    } else if (c == "sv") {
+        drawNordicCross(QColor("#006AA7"), QColor("#FECC02"));
+    } else if (c == "no" || c == "nb" || c == "nn") {
+        drawNordicCross(QColor("#BA0C2F"), QColor("#00205B"), QColor("#FFFFFF"));
+    } else if (c == "da") {
+        drawNordicCross(QColor("#C8102E"), QColor("#FFFFFF"));
+    } else if (c == "fi") {
+        drawNordicCross(QColor("#FFFFFF"), QColor("#003580"));
+    } else if (c == "is") {
+        drawNordicCross(QColor("#02529C"), QColor("#DC1E35"), QColor("#FFFFFF"));
+    } else if (c == "et") {
+        fillH3(QColor("#0072CE"), QColor("#000000"), QColor("#FFFFFF"));
+    } else if (c == "lv") {
+        p.fillRect(QRectF(0, 0, W, H), QColor("#9E3039"));
+        p.fillRect(QRectF(0, H * 0.40, W, H * 0.20), QColor("#FFFFFF"));
+    } else if (c == "lt") {
+        fillH3(QColor("#FDB913"), QColor("#006A44"), QColor("#C1272D"));
+    } else if (c == "sw") {
+        fillH3(QColor("#000000"), QColor("#BB0000"), QColor("#006600"));
+        p.fillRect(QRectF(0, H * 0.30, W, H * 0.05), QColor("#FFFFFF"));
+        p.fillRect(QRectF(0, H * 0.65, W, H * 0.05), QColor("#FFFFFF"));
+    } else if (c == "mg") {
+        p.fillRect(QRectF(0, 0, W * 0.34, H), QColor("#FFFFFF"));
+        p.fillRect(QRectF(W * 0.34, 0, W * 0.66, H * 0.50), QColor("#FC3D32"));
+        p.fillRect(QRectF(W * 0.34, H * 0.50, W * 0.66, H * 0.50), QColor("#007E3A"));
+    } else if (c == "am" || c == "ti" || c == "om") {
+        fillH3(QColor("#078930"), QColor("#FCDD09"), QColor("#DA121A"));
+        p.setPen(Qt::NoPen);
+        p.setBrush(QColor("#0F47AF"));
+        p.drawEllipse(QPointF(W * 0.50, H * 0.50), H * 0.18, H * 0.18);
+    } else if (c == "yo" || c == "ha" || c == "ig") {
+        fillV3(QColor("#008751"), QColor("#FFFFFF"), QColor("#008751"));
+    } else if (c == "af" || c == "zu" || c == "xh") {
+        fillH2(QColor("#DE3831"), QColor("#002395"));
+        p.fillRect(QRectF(0, H * 0.36, W, H * 0.28), QColor("#007A4D"));
+        QPolygonF tri;
+        tri << QPointF(0, 0) << QPointF(W * 0.42, H * 0.50) << QPointF(0, H);
+        p.setPen(QPen(QColor("#FFB612"), 1.6));
+        p.setBrush(QColor("#007A4D"));
+        p.drawPolygon(tri);
+    } else if (c == "ln") {
+        p.fillRect(QRectF(0, 0, W, H), QColor("#007FFF"));
+        p.setPen(QPen(QColor("#F7D618"), H * 0.28));
+        p.drawLine(QPointF(0, H), QPointF(W, 0));
+        p.setPen(QPen(QColor("#CE1021"), H * 0.16));
+        p.drawLine(QPointF(0, H), QPointF(W, 0));
+    } else if (c == "rw") {
+        p.fillRect(QRectF(0, 0, W, H * 0.50), QColor("#00A1DE"));
+        p.fillRect(QRectF(0, H * 0.50, W, H * 0.25), QColor("#FAD201"));
+        p.fillRect(QRectF(0, H * 0.75, W, H * 0.25), QColor("#20603D"));
+    } else if (c == "wo" || c == "bm") {
+        fillV3(QColor("#00853F"), QColor("#FDEF42"), QColor("#E31B23"));
+    } else if (c == "auto" || c == "mul" || c == "und" || c == "eo") {
+        // Globe / Universel
+        p.fillRect(QRectF(0, 0, W, H), QColor("#0F172A"));
+        p.setPen(QPen(QColor("#38BDF8"), 1.3));
+        p.setBrush(QColor("#0284C7"));
+        qreal r = H * 0.33;
+        QPointF center(W * 0.50, H * 0.50);
+        p.drawEllipse(center, r, r);
+        p.setBrush(Qt::NoBrush);
+        p.setPen(QPen(QColor("#E0F2FE"), 1.0));
+        p.drawEllipse(center, r * 0.52, r);
+        p.drawLine(QPointF(center.x() - r, center.y()), QPointF(center.x() + r, center.y()));
+    } else {
+        // Drapeau bicolore/tricolore distinctif généré à partir du code ISO + code à 2/3 lettres
+        uint h = qHash(c, 42u);
+        static const QColor palette[] = {
+            QColor("#0284C7"), QColor("#059669"), QColor("#D97706"), QColor("#7C3AED"),
+            QColor("#DC2626"), QColor("#0D9488"), QColor("#2563EB"), QColor("#C026D3")
+        };
+        QColor topCol = palette[h % 8];
+        QColor botCol = palette[(h / 7) % 8].darker(135);
+        fillH2(topCol, botCol);
+        p.fillRect(QRectF(0, 0, W * 0.16, H), QColor("#FDE68A"));
+        QFont f("Sans", std::max(6, int(H * 0.34)), QFont::Bold);
+        p.setFont(f);
+        p.setPen(QColor("#FFFFFF"));
+        p.drawText(QRectF(W * 0.14, 0, W * 0.86, H), Qt::AlignCenter, c.left(3).toUpper());
+    }
+
+    // Bordure nette autour du drapeau pour un rendu impeccable sur fond sombre comme sur fond clair
+    p.setClipping(false);
+    p.setBrush(Qt::NoBrush);
+    p.setPen(QPen(QColor(255, 255, 255, 95), 1.0));
+    p.drawRoundedRect(QRectF(0.5, 0.5, W - 1.0, H - 1.0), rx, rx);
+
+    return pix;
+}
+
+QIcon SwordEngine::languageFlagIcon(const QString& langCode) {
+    QString key = langCode.trimmed().toLower();
+    if (key.isEmpty()) key = "und";
+    static QHash<QString, QIcon> cache;
+    auto it = cache.find(key);
+    if (it != cache.end()) return it.value();
+
+    QIcon icon(languageFlagPixmap(key, 44, 30));
+    cache.insert(key, icon);
+    return icon;
+}
+
+QString SwordEngine::languageFlagHtml(const QString& langCode, int width, int height) {
+    QString key = QString("%1_%2x%3").arg(langCode.trimmed().toLower()).arg(width).arg(height);
+    static QHash<QString, QString> htmlCache;
+    auto it = htmlCache.find(key);
+    if (it != htmlCache.end()) return it.value();
+
+    QPixmap pix = languageFlagPixmap(langCode, width * 2, height * 2);
+    QByteArray bytes;
+    QBuffer buf(&bytes);
+    buf.open(QIODevice::WriteOnly);
+    pix.save(&buf, "PNG");
+    QString imgTag = QString("<img src=\"data:image/png;base64,%1\" width=\"%2\" height=\"%3\" style=\"vertical-align:middle;\"/>")
+        .arg(QString::fromLatin1(bytes.toBase64()))
+        .arg(width)
+        .arg(height);
+    htmlCache.insert(key, imgTag);
+    return imgTag;
+}
+
+QString SwordEngine::languageFlagAndNameHtml(const QString& langCode) {
+    QString c = langCode.trimmed().toLower();
+    if (c == "auto") {
+        return QString("%1 %2").arg(
+            languageFlagHtml("auto"),
+            uiTr("Auto (selon la Bible active)", "Auto (from active Bible)", "Auto (según la Biblia activa)").toHtmlEscaped()
+        );
+    }
+    if (c == "fr_es") {
+        return QString("%1 Français &amp; Español").arg(languageFlagHtml("fr_es"));
+    }
+    return QString("%1 %2").arg(languageFlagHtml(c), languageNativeName(c).toHtmlEscaped());
 }
 
 QStringList SwordEngine::getInstalledStudyLanguages() const {
@@ -1348,7 +1726,7 @@ QString SwordEngine::lookupStrongAndMorphHtml(
         if (QString::fromUtf8(frMod->getKeyText()) == key5 && !entry.trimmed().isEmpty()) {
             entry.replace(QRegularExpression(R"(Voir définition\s+(\d+))"),
                           QString(R"(Voir définition <a href="app://word?strong=%1\1">%1\1</a>)").arg(isHebrew ? "H" : "G"));
-            appendSection("🇫🇷 Dictionnaire Strong en Français", frModName, entry);
+            appendSection(languageFlagHtml("fr") + " Dictionnaire Strong en Français", frModName, entry);
         }
     }
 

@@ -127,6 +127,10 @@ public:
     static QString languageFlag(const QString& langCode);
     static QString languageNativeName(const QString& langCode);
     static QString languageFlagAndName(const QString& langCode);
+    static class QPixmap languageFlagPixmap(const QString& langCode, int width = 44, int height = 30);
+    static class QIcon languageFlagIcon(const QString& langCode);
+    static QString languageFlagHtml(const QString& langCode, int width = 18, int height = 12);
+    static QString languageFlagAndNameHtml(const QString& langCode);
     static bool isAncientBiblicalLanguage(const QString& langCode);
 
     // Books & Navigation

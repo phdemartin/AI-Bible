@@ -1044,6 +1044,7 @@ LeftScreenWidget::LeftScreenWidget(SwordEngine* engine, QWidget* parent)
     treeLayout->addWidget(m_treeFilterEdit);
 
     m_docTree = new QTreeWidget();
+    m_docTree->setIconSize(QSize(22, 15));
     m_docTree->setHeaderLabels({
         SwordEngine::uiTr("Module", "Module", "Módulo"),
         SwordEngine::uiTr("Description", "Description", "Descripción")
@@ -1078,6 +1079,7 @@ LeftScreenWidget::LeftScreenWidget(SwordEngine* engine, QWidget* parent)
     searchLayout->addLayout(sRow);
 
     m_searchBibleCombo = new QComboBox();
+    m_searchBibleCombo->setIconSize(QSize(22, 15));
     searchLayout->addWidget(m_searchBibleCombo);
 
     m_searchStatusLabel = new QLabel(
@@ -1168,8 +1170,11 @@ void LeftScreenWidget::populateDocumentTree() {
     m_docTree->clear();
     m_searchBibleCombo->clear();
 
-    auto makeCat = [this](const QString& title) -> QTreeWidgetItem* {
+    auto makeCat = [this](const QString& title, const QIcon& icon = QIcon()) -> QTreeWidgetItem* {
         auto* item = new QTreeWidgetItem(m_docTree, {title, ""});
+        if (!icon.isNull()) {
+            item->setIcon(0, icon);
+        }
         QFont f = item->font(0);
         f.setBold(true);
         item->setFont(0, f);
@@ -1193,14 +1198,17 @@ void LeftScreenWidget::populateDocumentTree() {
             }
         }
         if (hasBibleInLang) {
-            catByLang[lang] = makeCat(QString("%1 %2 — %3")
-                .arg(SwordEngine::languageFlag(lang), biblesWord, SwordEngine::languageNativeName(lang)));
+            catByLang[lang] = makeCat(
+                QString("%1 — %2").arg(biblesWord, SwordEngine::languageNativeName(lang)),
+                SwordEngine::languageFlagIcon(lang)
+            );
         }
     }
     QTreeWidgetItem* catBiblesOrig = makeCat(
-        SwordEngine::uiTr("🏛️ Bibles — Grec / Hébreu / Ancien",
-                          "🏛️ Bibles — Greek / Hebrew / Ancient",
-                          "🏛️ Biblias — Griego / Hebreo / Antiguo")
+        SwordEngine::uiTr("Bibles — Grec / Hébreu / Ancien",
+                          "Bibles — Greek / Hebrew / Ancient",
+                          "Biblias — Griego / Hebreo / Antiguo"),
+        SwordEngine::languageFlagIcon("grc")
     );
     catBiblesOrig->setExpanded(false);
 
@@ -1212,15 +1220,17 @@ void LeftScreenWidget::populateDocumentTree() {
     );
 
     for (const auto& b : m_engine->getBibleModules()) {
-        m_searchBibleCombo->addItem(QString("%1 %2 — %3")
-            .arg(SwordEngine::languageFlag(b.language), b.name, b.description), b.name);
+        const QIcon flagIcon = SwordEngine::languageFlagIcon(b.language);
+        m_searchBibleCombo->addItem(flagIcon, QString("%1 — %2").arg(b.name, b.description), b.name);
 
         QString normLang = b.language.trimmed().toLower().section('-', 0, 0).section('_', 0, 0);
         QTreeWidgetItem* parentCat = catByLang.value(normLang, nullptr);
         if (!parentCat) {
             if (!SwordEngine::isAncientBiblicalLanguage(normLang) && !normLang.isEmpty()) {
-                parentCat = makeCat(QString("%1 %2 — %3")
-                    .arg(SwordEngine::languageFlag(normLang), biblesWord, SwordEngine::languageNativeName(normLang)));
+                parentCat = makeCat(
+                    QString("%1 — %2").arg(biblesWord, SwordEngine::languageNativeName(normLang)),
+                    SwordEngine::languageFlagIcon(normLang)
+                );
                 catByLang[normLang] = parentCat;
             } else {
                 parentCat = catBiblesOrig;
@@ -1228,6 +1238,7 @@ void LeftScreenWidget::populateDocumentTree() {
         }
 
         auto* item = new QTreeWidgetItem(parentCat, {b.name, b.description});
+        item->setIcon(0, flagIcon);
         item->setData(0, Qt::UserRole, "BIBLE");
         item->setData(0, Qt::UserRole + 1, b.name);
         item->setToolTip(0, QString("%1 — %2 [%3]\n%4")
@@ -1252,8 +1263,8 @@ void LeftScreenWidget::populateDocumentTree() {
         allFr->setFont(0, f);
     }
     for (const auto& cm : m_engine->getCommentaryModules()) {
-        QString prefix = SwordEngine::languageFlag(cm.language) + " ";
-        auto* item = new QTreeWidgetItem(catCommentaries, {prefix + cm.name, cm.description});
+        auto* item = new QTreeWidgetItem(catCommentaries, {cm.name, cm.description});
+        item->setIcon(0, SwordEngine::languageFlagIcon(cm.language));
         item->setData(0, Qt::UserRole, "COMMENTARY");
         item->setData(0, Qt::UserRole + 1, cm.name);
     }
@@ -1272,8 +1283,8 @@ void LeftScreenWidget::populateDocumentTree() {
         autoDict->setFont(0, f);
     }
     for (const auto& lx : m_engine->getLexiconModules()) {
-        QString prefix = SwordEngine::languageFlag(lx.language) + " ";
-        auto* item = new QTreeWidgetItem(catDictionaries, {prefix + lx.name, lx.description});
+        auto* item = new QTreeWidgetItem(catDictionaries, {lx.name, lx.description});
+        item->setIcon(0, SwordEngine::languageFlagIcon(lx.language));
         item->setData(0, Qt::UserRole, "DICTIONARY");
         item->setData(0, Qt::UserRole + 1, lx.name);
     }
@@ -1630,6 +1641,7 @@ UniversalPaneWidget::UniversalPaneWidget(int paneIndex, SwordEngine* engine, Gem
         bhLayout->setSpacing(4);
 
         m_bibleCombo = new QComboBox();
+        m_bibleCombo->setIconSize(QSize(22, 15));
         m_bibleCombo->setMaxVisibleItems(25);
         m_bibleCombo->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
         m_bibleCombo->setMinimumContentsLength(8);
@@ -1641,8 +1653,7 @@ UniversalPaneWidget::UniversalPaneWidget(int paneIndex, SwordEngine* engine, Gem
 
         const auto bibles = m_engine->getBibleModules();
         for (const auto& b : bibles) {
-            QString flag = SwordEngine::languageFlag(b.language);
-            m_bibleCombo->addItem(QString("%1 %2 — %3").arg(flag, b.name, b.description), b.name);
+            m_bibleCombo->addItem(SwordEngine::languageFlagIcon(b.language), QString("%1 — %2").arg(b.name, b.description), b.name);
         }
         connect(m_bibleCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int idx) {
             if (m_updatingControls || idx < 0) return;
@@ -1670,6 +1681,7 @@ UniversalPaneWidget::UniversalPaneWidget(int paneIndex, SwordEngine* engine, Gem
         chLayout->setSpacing(4);
 
         m_commCombo = new QComboBox();
+        m_commCombo->setIconSize(QSize(22, 15));
         m_commCombo->setMaxVisibleItems(25);
         m_commCombo->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
         m_commCombo->setMinimumContentsLength(8);
@@ -1683,8 +1695,7 @@ UniversalPaneWidget::UniversalPaneWidget(int paneIndex, SwordEngine* engine, Gem
             "ALL_FR"
         );
         for (const auto& cm : m_engine->getCommentaryModules()) {
-            QString flag = SwordEngine::languageFlag(cm.language);
-            m_commCombo->addItem(QString("%1 %2 — %3").arg(flag, cm.name, cm.description), cm.name);
+            m_commCombo->addItem(SwordEngine::languageFlagIcon(cm.language), QString("%1 — %2").arg(cm.name, cm.description), cm.name);
         }
         connect(m_commCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int idx) {
             if (m_updatingControls || idx < 0) return;
@@ -1712,6 +1723,7 @@ UniversalPaneWidget::UniversalPaneWidget(int paneIndex, SwordEngine* engine, Gem
         dhLayout->setSpacing(4);
 
         m_dictCombo = new QComboBox();
+        m_dictCombo->setIconSize(QSize(22, 15));
         m_dictCombo->setMaxVisibleItems(25);
         m_dictCombo->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
         m_dictCombo->setMinimumContentsLength(7);
@@ -1725,8 +1737,7 @@ UniversalPaneWidget::UniversalPaneWidget(int paneIndex, SwordEngine* engine, Gem
             "AUTO_STRONG"
         );
         for (const auto& lx : m_engine->getLexiconModules()) {
-            QString flag = SwordEngine::languageFlag(lx.language);
-            m_dictCombo->addItem(QString("%1 %2 — %3").arg(flag, lx.name, lx.description), lx.name);
+            m_dictCombo->addItem(SwordEngine::languageFlagIcon(lx.language), QString("%1 — %2").arg(lx.name, lx.description), lx.name);
         }
         connect(m_dictCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int idx) {
             if (m_updatingControls || idx < 0) return;
@@ -1781,6 +1792,7 @@ UniversalPaneWidget::UniversalPaneWidget(int paneIndex, SwordEngine* engine, Gem
         });
 
         m_aiLangCombo = new QComboBox();
+        m_aiLangCombo->setIconSize(QSize(22, 15));
         m_aiLangCombo->setCursor(Qt::PointingHandCursor);
         populateAiLanguageCombo();
         m_aiLangCombo->setStyleSheet(
@@ -2544,16 +2556,20 @@ void UniversalPaneWidget::populateAiLanguageCombo() {
 
     QString currentSelection = m_aiResponseLang;
     m_aiLangCombo->clear();
-    m_aiLangCombo->addItem("🔄 Auto (selon la Bible)", "auto");
+    m_aiLangCombo->addItem(
+        SwordEngine::languageFlagIcon("auto"),
+        SwordEngine::uiTr("Auto (selon la Bible)", "Auto (from active Bible)", "Auto (según la Biblia)"),
+        "auto"
+    );
 
     const QStringList installedLangs = m_engine->getInstalledStudyLanguages();
     QStringList tooltipLines;
     tooltipLines << "Choisir la langue dans laquelle l'IA rédige sa réponse :"
-                 << "• 🔄 Auto (selon la Bible) : répond automatiquement dans la langue de la Bible active ou du passage sélectionné (sinon la langue de votre système).";
+                 << "• Auto (selon la Bible) : répond automatiquement dans la langue de la Bible active ou du passage sélectionné (sinon la langue de votre système).";
 
     for (const QString& lang : installedLangs) {
-        QString label = SwordEngine::languageFlagAndName(lang);
-        m_aiLangCombo->addItem(label, lang);
+        QString label = SwordEngine::languageNativeName(lang);
+        m_aiLangCombo->addItem(SwordEngine::languageFlagIcon(lang), label, lang);
         tooltipLines << QString("• %1 (détecté depuis vos modules installés / votre système)").arg(label);
     }
     m_aiLangCombo->setToolTip(tooltipLines.join("\n"));
@@ -2561,7 +2577,7 @@ void UniversalPaneWidget::populateAiLanguageCombo() {
     int idx = m_aiLangCombo->findData(currentSelection);
     if (idx < 0 && !currentSelection.isEmpty() && currentSelection != "auto") {
         // Si l'utilisateur avait une langue enregistrée pas encore listée, l'ajouter proprement
-        m_aiLangCombo->addItem(SwordEngine::languageFlagAndName(currentSelection), currentSelection);
+        m_aiLangCombo->addItem(SwordEngine::languageFlagIcon(currentSelection), SwordEngine::languageFlagAndName(currentSelection), currentSelection);
         idx = m_aiLangCombo->findData(currentSelection);
     }
     if (idx >= 0) {
@@ -2674,7 +2690,7 @@ void UniversalPaneWidget::updateAiModeSwitchUi() {
     if (!m_modeChatBtn || !m_modeSourcesBtn || !m_sendAiBtn || !m_geminiInputEdit) return;
 
     QString effLang = effectiveAiLanguageCode();
-    QString langBadge = QString("%1 %2").arg(SwordEngine::languageFlag(effLang), effLang.toUpper());
+    QString langBadge = effLang.toUpper();
     QString effDisplay = GeminiClient::languageDisplayName(effLang);
     if (m_aiResponseLang == "auto") {
         effDisplay = QString("🔄 Auto → %1").arg(effDisplay);
@@ -2690,7 +2706,9 @@ void UniversalPaneWidget::updateAiModeSwitchUi() {
             "border: 1px solid #334155; border-radius: 5px; font-weight: normal; padding: 3px 7px; }"
             "QPushButton:hover { background-color: #334155; color: #E2E8F0; }"
         );
-        m_sendAiBtn->setText(QString("🚀 Envoyer (%1)").arg(langBadge));
+        m_sendAiBtn->setIcon(SwordEngine::languageFlagIcon(effLang));
+        m_sendAiBtn->setIconSize(QSize(20, 14));
+        m_sendAiBtn->setText(QString("Envoyer (%1)").arg(langBadge));
         m_sendAiBtn->setStyleSheet(
             "QPushButton { background-color: #0284C7; color: #FFFFFF; "
             "border: 1px solid #38BDF8; border-radius: 5px; font-weight: bold; padding: 5px 10px; }"
@@ -2717,6 +2735,7 @@ void UniversalPaneWidget::updateAiModeSwitchUi() {
             "border: 1px solid #334155; border-radius: 5px; font-weight: normal; padding: 3px 7px; }"
             "QPushButton:hover { background-color: #334155; color: #E2E8F0; }"
         );
+        m_sendAiBtn->setIcon(QIcon());
         m_sendAiBtn->setText("🔍 Chercher Sources");
         m_sendAiBtn->setStyleSheet(
             "QPushButton { background-color: #D97706; color: #FFFFFF; "
@@ -2947,17 +2966,15 @@ void UniversalPaneWidget::reloadModuleLists() {
     if (m_bibleCombo) {
         m_bibleCombo->clear();
         for (const auto& b : m_engine->getBibleModules()) {
-            QString flag = SwordEngine::languageFlag(b.language);
-            m_bibleCombo->addItem(QString("%1 %2 — %3").arg(flag, b.name, b.description), b.name);
+            m_bibleCombo->addItem(SwordEngine::languageFlagIcon(b.language), QString("%1 — %2").arg(b.name, b.description), b.name);
         }
     }
 
     if (m_commCombo) {
         m_commCombo->clear();
-        m_commCombo->addItem("★ Tous les Commentaires Français + TSK", "ALL_FR");
+        m_commCombo->addItem("★ Tous les Commentaires + TSK", "ALL_FR");
         for (const auto& cm : m_engine->getCommentaryModules()) {
-            QString flag = SwordEngine::languageFlag(cm.language);
-            m_commCombo->addItem(QString("%1 %2 — %3").arg(flag, cm.name, cm.description), cm.name);
+            m_commCombo->addItem(SwordEngine::languageFlagIcon(cm.language), QString("%1 — %2").arg(cm.name, cm.description), cm.name);
         }
     }
 
@@ -2965,8 +2982,7 @@ void UniversalPaneWidget::reloadModuleLists() {
         m_dictCombo->clear();
         m_dictCombo->addItem("★ Grec/Hébreu Strong Auto", "AUTO_STRONG");
         for (const auto& lx : m_engine->getLexiconModules()) {
-            QString flag = SwordEngine::languageFlag(lx.language);
-            m_dictCombo->addItem(QString("%1 %2 — %3").arg(flag, lx.name, lx.description), lx.name);
+            m_dictCombo->addItem(SwordEngine::languageFlagIcon(lx.language), QString("%1 — %2").arg(lx.name, lx.description), lx.name);
         }
     }
 
@@ -3207,31 +3223,30 @@ void UniversalPaneWidget::onBrowserAnchorClicked(const QUrl& url) {
             QString prompt;
             QString displayLabel;
             if (targetLang == "es") {
-                displayLabel = "🇪🇸 Traduire / Adapter cette étude en Español (Reina-Valera / LBLA) pour ma prédication";
+                displayLabel = "Traduire / Adapter cette étude en Español (Reina-Valera / LBLA) pour ma prédication";
                 prompt = QString(
-                    "Traduce y adapta íntegramente al ESPAÑOL el siguiente estudio bíblico y exegético "
+                    "Traduce y adapta íntegramente al ESPAÑOL el siguiente estudio bíblico y exégético "
                     "(usando la terminología bíblica en español de Reina-Valera 1960 / LBLA, conservando "
                     "todos los títulos, listas, negritas y palabras griegas/hebreas Strong, listo para pegar "
                     "en mi procesador de textos para predicar en español):\n\n%1"
                 ).arg(originalText);
             } else if (targetLang == "fr_es") {
-                displayLabel = "🇫🇷+🇪🇸 Présenter cette étude en version Bilingue (Français + Español)";
+                displayLabel = "Présenter cette étude en version Bilingue (Français + Español)";
                 prompt = QString(
                     "Présente l'étude biblique suivante en version BILINGUE complète : "
                     "1) Section en FRANÇAIS, suivie de 2) Section équivalente en ESPAÑOL (Reina-Valera 1960 / LBLA), "
                     "prête à être collée dans mon traitement de texte :\n\n%1"
                 ).arg(originalText);
             } else if (targetLang == "fr") {
-                displayLabel = "🇫🇷 Traduire / Adapter cette étude en Français (Louis Segond)";
+                displayLabel = "Traduire / Adapter cette étude en Français (Louis Segond)";
                 prompt = QString(
                     "Traduis et adapte intégralement en FRANÇAIS l'étude biblique et exégétique suivante "
                     "(avec la terminologie biblique française Louis Segond, en conservant tous les titres, "
                     "listes, gras et mots grecs/hébreux Strong, prête à être collée dans mon traitement de texte) :\n\n%1"
                 ).arg(originalText);
             } else {
-                QString langDisp = SwordEngine::languageFlagAndName(targetLang);
                 QString langNative = SwordEngine::languageNativeName(targetLang);
-                displayLabel = QString("%1 Traduire / Adapter cette étude en %2").arg(SwordEngine::languageFlag(targetLang), langNative);
+                displayLabel = QString("Traduire / Adapter cette étude en %1").arg(langNative);
                 prompt = QString(
                     "Translate and adapt the following biblical and exegetical study ENTIRELY into %1 (ISO code: %2), "
                     "using standard biblical terminology and book names in %1, preserving all headings, bullet lists, bold text, "
@@ -3877,14 +3892,14 @@ void UniversalPaneWidget::renderGeminiConversation() {
     } else {
         const auto& hist = m_gemini->history();
         QString effLang = effectiveAiLanguageCode();
-        QString activeLangDisp = GeminiClient::languageDisplayName(effLang);
+        QString activeLangDispHtml = SwordEngine::languageFlagAndNameHtml(effLang);
         if (m_aiResponseLang == "auto") {
-            activeLangDisp = QString("🔄 Auto → %1").arg(activeLangDisp);
+            activeLangDispHtml = QString("🔄 Auto → %1").arg(activeLangDispHtml);
         }
         const QStringList installedLangs = m_engine ? m_engine->getInstalledStudyLanguages() : QStringList{"fr", "en", "es"};
-        QStringList langNamesSample;
+        QStringList langNamesSampleHtml;
         for (const QString& l : installedLangs) {
-            langNamesSample << SwordEngine::languageFlagAndName(l);
+            langNamesSampleHtml << SwordEngine::languageFlagAndNameHtml(l);
         }
 
         if (hist.isEmpty() && !m_gemini->isPending()) {
@@ -3902,7 +3917,7 @@ void UniversalPaneWidget::renderGeminiConversation() {
                         <li><b>Sélectionner n'importe quelle partie intéressante d'une réponse de Gemini</b> → <b>Clic Droit → « 📝 Ajouter la sélection à la note de %4 »</b> ou <b>« 📋 Copier la sélection pour Traitement de texte »</b>.</li>
                     </ul>
                 </div>
-            )").arg(m_style.cardBgColor, m_style.accentColor, m_style.accentColor, activeFrRef.toHtmlEscaped(), activeLangDisp.toHtmlEscaped(), langNamesSample.join(", ").toHtmlEscaped());
+            )").arg(m_style.cardBgColor, m_style.accentColor, m_style.accentColor, activeFrRef.toHtmlEscaped(), activeLangDispHtml, langNamesSampleHtml.join(", "));
 
             if (!m_preparedExcerptText.trimmed().isEmpty()) {
                 QString frRef = m_engine->toFrenchReference(m_preparedSwordKey);
@@ -3915,7 +3930,7 @@ void UniversalPaneWidget::renderGeminiConversation() {
                 )").arg(m_style.cardBgColor, m_style.accentColor,
                         frRef.toHtmlEscaped(), m_preparedBibleMod.toHtmlEscaped(),
                         m_preparedExcerptText.trimmed().toHtmlEscaped().replace("\n", "<br>"),
-                        activeLangDisp.toHtmlEscaped());
+                        activeLangDispHtml);
             }
         } else {
             bool isDark = QColor(m_style.bgColor).lightness() < 128;
@@ -3935,23 +3950,23 @@ void UniversalPaneWidget::renderGeminiConversation() {
 
                 QString borderCol = isUser ? "#0284C7" : m_style.accentColor;
                 QString turnLang = turn.langCode.isEmpty() ? effLang : turn.langCode;
-                QString langDisp = GeminiClient::languageDisplayName(turnLang);
+                QString langDispHtml = SwordEngine::languageFlagAndNameHtml(turnLang);
                 QString headerTitle = isUser
                     ? "👤 Vous"
-                    : QString("✨ Gemini (%1 — %2)").arg(activeFrRef.toHtmlEscaped(), langDisp.toHtmlEscaped());
+                    : QString("✨ Gemini (%1 — %2)").arg(activeFrRef.toHtmlEscaped(), langDispHtml);
 
                 QString actionFooter;
                 if (!isUser) {
                     QString translateLinks;
                     for (const QString& targetL : installedLangs) {
                         if (targetL == turnLang) continue;
-                        QString pillLabel = QString("%1 Traduire en %2")
-                            .arg(SwordEngine::languageFlag(targetL), SwordEngine::languageNativeName(targetL));
+                        QString pillLabelHtml = QString("%1 Traduire en %2")
+                            .arg(SwordEngine::languageFlagHtml(targetL), SwordEngine::languageNativeName(targetL).toHtmlEscaped());
                         translateLinks += QString(
                             "<a class='action-pill' href='app://translate-turn/%1?lang=%2' "
                             "style='background:rgba(245,158,11,0.18); color:#FBBF24; border:1px solid #D97706;'>"
                             "%3</a>"
-                        ).arg(i).arg(targetL, pillLabel.toHtmlEscaped());
+                        ).arg(i).arg(targetL, pillLabelHtml);
                     }
 
                     actionFooter = QString(R"(
@@ -3980,7 +3995,7 @@ void UniversalPaneWidget::renderGeminiConversation() {
                     <div style="background:%1; border:2px dashed %2; border-radius:8px; padding:12px; margin-bottom:10px;">
                         <b style="color:%2;">⏳ Gemini réfléchit et rédige la réponse (%3)...</b>
                     </div>
-                )").arg(m_style.cardBgColor, m_style.accentColor, activeLangDisp.toHtmlEscaped());
+                )").arg(m_style.cardBgColor, m_style.accentColor, activeLangDispHtml);
             }
         }
     }

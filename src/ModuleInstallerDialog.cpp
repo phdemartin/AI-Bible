@@ -821,72 +821,72 @@ int ModuleInstallerDialog::languageSortPriority(const QString& rawLangCode) {
 
 QString ModuleInstallerDialog::languageDisplayLabel(const QString& rawLangCode) {
     QString c = rawLangCode.trimmed().toLower();
-    if (c.isEmpty() || c == "und") return "🌍 Non spécifié / Universel (und)";
-    if (c == "mul") return "🌍 Multilingue / Lexiques (mul)";
+    if (c.isEmpty() || c == "und") return "Non spécifié / Universel (und)";
+    if (c == "mul") return "Multilingue / Lexiques (mul)";
 
     static const QMap<QString, QString> known = {
-        {"fr",  "🇫🇷 Français"},
-        {"es",  "🇪🇸 Español"},
-        {"en",  "🇬🇧 English"},
-        {"grc", "🏛️ Grec ancien / Koïné"},
-        {"he",  "🕍 Hébreu biblique"},
-        {"hbo", "🕍 Hébreu ancien"},
-        {"la",  "🏛️ Latin"},
-        {"pt",  "🇵🇹 Português"},
-        {"de",  "🇩🇪 Deutsch (Allemand)"},
-        {"it",  "🇮🇹 Italiano"},
-        {"ht",  "🇭🇹 Créole Haïtien"},
-        {"ru",  "🇷🇺 Русский (Russe)"},
-        {"uk",  "🇺🇦 Українська (Ukrainien)"},
-        {"ar",  "🇸🇦 Arabe (العربية)"},
-        {"zh",  "🇨🇳 Chinois (中文)"},
-        {"nl",  "🇳🇱 Nederlands (Néerlandais)"},
-        {"ro",  "🇷🇴 Română (Roumain)"},
-        {"pl",  "🇵🇱 Polski (Polonais)"},
-        {"el",  "🇬🇷 Grec moderne"},
-        {"ko",  "🇰🇷 Coréen (한국어)"},
-        {"ja",  "🇯🇵 Japonais (日本語)"},
-        {"vi",  "🇻🇳 Vietnamien (Tiếng Việt)"},
-        {"tr",  "🇹🇷 Turc (Türkçe)"},
-        {"fa",  "🇮🇷 Persan (فارسی)"},
-        {"hi",  "🇮🇳 Hindi"},
-        {"id",  "🇮🇩 Indonésien"},
-        {"tl",  "🇵🇭 Tagalog (Philippines)"},
-        {"sw",  "🇰🇪 Swahili"},
-        {"mg",  "🇲🇬 Malgache"},
-        {"am",  "🇪🇹 Amharique"},
-        {"syc", "🏛️ Syriaque / Araméen"},
-        {"cop", "🏛️ Copte"},
-        {"got", "🏛️ Gothique"},
-        {"eo",  "🌍 Espéranto"},
-        {"ca",  "🇪🇸 Catalan"},
-        {"eu",  "🇪🇸 Basque"},
-        {"br",  "🇫🇷 Breton"},
-        {"co",  "🇫🇷 Corse"},
-        {"cs",  "🇨🇿 Tchèque"},
-        {"sk",  "🇸🇰 Slovaque"},
-        {"hu",  "🇭🇺 Hongrois"},
-        {"sv",  "🇸🇪 Suédois"},
-        {"no",  "🇳🇴 Norvégien"},
-        {"da",  "🇩🇰 Danois"},
-        {"fi",  "🇫🇮 Finnois"},
-        {"bg",  "🇧🇬 Bulgare"},
-        {"sr",  "🇷🇸 Serbe"},
-        {"hr",  "🇭🇷 Croate"},
-        {"th",  "🇹🇭 Thaï"},
-        {"my",  "🇲🇲 Birman"},
-        {"km",  "🇰🇭 Khmer"},
-        {"lo",  "🇱🇦 Lao"},
-        {"af",  "🇿🇦 Afrikaans"},
-        {"yo",  "🇳🇬 Yoruba"},
-        {"ha",  "🇳🇬 Haoussa"},
-        {"ig",  "🇳🇬 Igbo"},
-        {"zu",  "🇿🇦 Zoulou"},
-        {"ln",  "🇨🇩 Lingala"},
-        {"rw",  "🇷🇼 Kinyarwanda"},
-        {"rn",  "🇧🇮 Kirundi"},
-        {"wo",  "🇸🇳 Wolof"},
-        {"bm",  "🇲🇱 Bambara"}
+        {"fr",  "Français"},
+        {"es",  "Español"},
+        {"en",  "English"},
+        {"grc", "Grec ancien / Koïné"},
+        {"he",  "Hébreu biblique"},
+        {"hbo", "Hébreu ancien"},
+        {"la",  "Latin"},
+        {"pt",  "Português"},
+        {"de",  "Deutsch (Allemand)"},
+        {"it",  "Italiano"},
+        {"ht",  "Créole Haïtien"},
+        {"ru",  "Русский (Russe)"},
+        {"uk",  "Українська (Ukrainien)"},
+        {"ar",  "Arabe (العربية)"},
+        {"zh",  "Chinois (中文)"},
+        {"nl",  "Nederlands (Néerlandais)"},
+        {"ro",  "Română (Roumain)"},
+        {"pl",  "Polski (Polonais)"},
+        {"el",  "Grec moderne"},
+        {"ko",  "Coréen (한국어)"},
+        {"ja",  "Japonais (日本語)"},
+        {"vi",  "Vietnamien (Tiếng Việt)"},
+        {"tr",  "Turc (Türkçe)"},
+        {"fa",  "Persan (فارسی)"},
+        {"hi",  "Hindi"},
+        {"id",  "Indonésien"},
+        {"tl",  "Tagalog (Philippines)"},
+        {"sw",  "Swahili"},
+        {"mg",  "Malgache"},
+        {"am",  "Amharique"},
+        {"syc", "Syriaque / Araméen"},
+        {"cop", "Copte"},
+        {"got", "Gothique"},
+        {"eo",  "Espéranto"},
+        {"ca",  "Catalan"},
+        {"eu",  "Basque"},
+        {"br",  "Breton"},
+        {"co",  "Corse"},
+        {"cs",  "Tchèque"},
+        {"sk",  "Slovaque"},
+        {"hu",  "Hongrois"},
+        {"sv",  "Suédois"},
+        {"no",  "Norvégien"},
+        {"da",  "Danois"},
+        {"fi",  "Finnois"},
+        {"bg",  "Bulgare"},
+        {"sr",  "Serbe"},
+        {"hr",  "Croate"},
+        {"th",  "Thaï"},
+        {"my",  "Birman"},
+        {"km",  "Khmer"},
+        {"lo",  "Lao"},
+        {"af",  "Afrikaans"},
+        {"yo",  "Yoruba"},
+        {"ha",  "Haoussa"},
+        {"ig",  "Igbo"},
+        {"zu",  "Zoulou"},
+        {"ln",  "Lingala"},
+        {"rw",  "Kinyarwanda"},
+        {"rn",  "Kirundi"},
+        {"wo",  "Wolof"},
+        {"bm",  "Bambara"}
     };
 
     if (known.contains(c)) {
@@ -898,11 +898,11 @@ QString ModuleInstallerDialog::languageDisplayLabel(const QString& rawLangCode) 
         QString frLang = QLocale(QLocale::French).languageToString(loc.language());
         if (frLang.isEmpty()) frLang = QLocale::languageToString(loc.language());
         if (!frLang.isEmpty() && frLang.toLower() != "c") {
-            return QString("🌐 %1 [%2]").arg(frLang, c);
+            return QString("%1 [%2]").arg(frLang, c);
         }
     }
 
-    return QString("🌐 Langue [%1]").arg(c);
+    return QString("Langue [%1]").arg(c);
 }
 
 ModuleInstallerDialog::ModuleInstallerDialog(SwordEngine* engine, QWidget* parent)
@@ -963,6 +963,8 @@ ModuleInstallerDialog::ModuleInstallerDialog(SwordEngine* engine, QWidget* paren
     langQuickRow->setSpacing(4);
 
     auto* btnDefaultLangs = new QPushButton("⭐ FR + ES + EN + Grec/Hébreu");
+    btnDefaultLangs->setIcon(SwordEngine::languageFlagIcon("fr_es"));
+    btnDefaultLangs->setIconSize(QSize(22, 15));
     btnDefaultLangs->setCursor(Qt::PointingHandCursor);
     btnDefaultLangs->setToolTip("Cocher uniquement Français, Español, English, Grec ancien et Hébreu");
     btnDefaultLangs->setStyleSheet(
@@ -989,6 +991,7 @@ ModuleInstallerDialog::ModuleInstallerDialog(SwordEngine* engine, QWidget* paren
 
     m_langListWidget = new QListWidget();
     m_langListWidget->setAlternatingRowColors(true);
+    m_langListWidget->setIconSize(QSize(24, 16));
     connect(m_langListWidget, &QListWidget::itemChanged, this, &ModuleInstallerDialog::onLanguageItemChanged);
     langLayout->addWidget(m_langListWidget, 1);
 
@@ -1109,6 +1112,7 @@ ModuleInstallerDialog::ModuleInstallerDialog(SwordEngine* engine, QWidget* paren
     m_modTree = new QTreeWidget();
     m_modTree->setRootIsDecorated(false);
     m_modTree->setAlternatingRowColors(true);
+    m_modTree->setIconSize(QSize(22, 15));
     m_modTree->setSortingEnabled(true);
     m_modTree->setHeaderLabels({
         "☐ Module",
@@ -1401,7 +1405,7 @@ void ModuleInstallerDialog::rebuildLanguageListWidget() {
             continue;
         }
 
-        auto* item = new QListWidgetItem(label);
+        auto* item = new QListWidgetItem(SwordEngine::languageFlagIcon(code), label);
         item->setData(Qt::UserRole, code);
         item->setFlags(item->flags() | Qt::ItemIsUserCheckable);
         bool checked = m_checkedLangs.contains(code);
@@ -1471,6 +1475,8 @@ void ModuleInstallerDialog::rebuildModuleTreeWidget() {
         bool isChecked = m_checkedModulesToSource.contains(mod.name);
         item->setCheckState(0, isChecked ? Qt::Checked : Qt::Unchecked);
 
+        const QIcon flagIcon = SwordEngine::languageFlagIcon(mod.langCode);
+        item->setIcon(0, flagIcon);
         item->setText(0, mod.name);
         if (mod.isInstalled) {
             item->setText(1, mod.hasUpdate ? "⬆️ Mise à jour" : "✅ Installé");
@@ -1482,6 +1488,7 @@ void ModuleInstallerDialog::rebuildModuleTreeWidget() {
         }
 
         item->setText(2, mod.categoryDisplay);
+        item->setIcon(3, flagIcon);
         item->setText(3, mod.langDisplay);
         item->setText(4, mod.description);
         item->setText(5, mod.sourceCaption);
@@ -1603,7 +1610,7 @@ void ModuleInstallerDialog::onModuleSelectionChanged() {
         .arg(mod.name.toHtmlEscaped(),
              mod.description.toHtmlEscaped(),
              mod.categoryDisplay.toHtmlEscaped(),
-             mod.langDisplay.toHtmlEscaped(),
+             QString("%1 %2").arg(SwordEngine::languageFlagHtml(mod.langCode), mod.langDisplay.toHtmlEscaped()),
              mod.sourceCaption.toHtmlEscaped(),
              mod.version.isEmpty() ? "1.0" : mod.version.toHtmlEscaped(),
              mod.installSize.isEmpty() ? "" : QString(" &nbsp;|&nbsp; <b>Taille :</b> %1 Ko").arg(mod.installSize.toInt() / 1024),
