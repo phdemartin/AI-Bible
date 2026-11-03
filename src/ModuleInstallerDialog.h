@@ -58,6 +58,8 @@ public:
     static QString languageDisplayLabel(const QString& rawLangCode);
     static int languageSortPriority(const QString& rawLangCode);
 
+    void reject() override;
+
 signals:
     void modulesChanged();
 
@@ -125,6 +127,8 @@ private:
 
     QThread* m_workerThread = nullptr;
     std::atomic<bool> m_cancelRequested{false};
+    bool m_isBusy = false;
     bool m_updatingUi = false;
     bool m_autoRefreshTriggered = false;
 };
+

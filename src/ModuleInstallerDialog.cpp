@@ -21,9 +21,13 @@
 #include <QDialogButtonBox>
 #include <QComboBox>
 #include <QMetaObject>
+#include <QCoreApplication>
 #include <QNetworkAccessManager>
+#include <QNetworkProxy>
+#include <QNetworkProxyFactory>
 #include <QNetworkRequest>
 #include <QNetworkReply>
+#include <QPointer>
 #include <QSslConfiguration>
 #include <QSslSocket>
 #include <QEventLoop>
@@ -95,15 +99,25 @@ int curlXferInfoCallback(void* clientp, curl_off_t dltotal, curl_off_t dlnow, cu
     return 0;
 }
 
-// Téléchargement robuste en mémoire :
-// 1) Utilise Qt6 QNetworkAccessManager (pile TLS native Windows Schannel / OpenSSL Linux) pour HTTP/HTTPS
-// 2) Bascule automatiquement sur libcurl en mémoire en cas d'échec ou pour les dépôts FTP
+QNetworkAccessManager& sharedNetworkManager() {
+    static QNetworkAccessManager* s_nam = nullptr;
+    if (!s_nam) {
+        QNetworkProxyFactory::setUseSystemConfiguration(false);
+        s_nam = new QNetworkAccessManager(QCoreApplication::instance());
+        s_nam->setProxy(QNetworkProxy::NoProxy);
+    }
+    return *s_nam;
+}
+
+// Téléchargement robuste et non-bloquant en mémoire :
+// 1) Utilise Qt6 QNetworkAccessManager sur le thread principal (moteur TLS natif Windows Schannel / OpenSSL Linux)
+// 2) Bascule automatiquement sur libcurl dans un thread dédié en cas d'échec ou pour les dépôts FTP
 bool downloadUrlToBytes(
     const QString& urlStr,
     QByteArray& outData,
     const std::atomic<bool>& cancelFlag,
     std::function<void(qint64, qint64)> progressCb = nullptr,
-    int timeoutMs = 15000)
+    int timeoutMs = 12000)
 {
     outData.clear();
     if (cancelFlag.load()) return false;
@@ -112,14 +126,14 @@ bool downloadUrlToBytes(
 
     // Essai 1 : Qt6 QNetworkAccessManager pour HTTP / HTTPS
     if (urlStr.startsWith("http://", Qt::CaseInsensitive) || urlStr.startsWith("https://", Qt::CaseInsensitive)) {
-        QNetworkAccessManager nam;
+        QNetworkAccessManager& nam = sharedNetworkManager();
         QNetworkRequest req{QUrl(urlStr)};
         req.setRawHeader("User-Agent", userAgent);
         req.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::NoLessSafeRedirectPolicy);
         req.setMaximumRedirectsAllowed(6);
 
 #ifndef QT_NO_SSL
-        if (QSslSocket::supportsSsl()) {
+        if (urlStr.startsWith("https://", Qt::CaseInsensitive) && QSslSocket::supportsSsl()) {
             QSslConfiguration sslConf = QSslConfiguration::defaultConfiguration();
             sslConf.setPeerVerifyMode(QSslSocket::VerifyNone);
             req.setSslConfiguration(sslConf);
@@ -131,7 +145,7 @@ bool downloadUrlToBytes(
         inactivityTimer.setSingleShot(true);
 
         QTimer cancelCheckTimer;
-        cancelCheckTimer.setInterval(120);
+        cancelCheckTimer.setInterval(80);
 
         QNetworkReply* reply = nam.get(req);
 
@@ -155,7 +169,9 @@ bool downloadUrlToBytes(
 
         inactivityTimer.start(timeoutMs);
         cancelCheckTimer.start();
-        loop.exec();
+        if (!reply->isFinished()) {
+            loop.exec();
+        }
         cancelCheckTimer.stop();
         inactivityTimer.stop();
 
@@ -172,37 +188,67 @@ bool downloadUrlToBytes(
         if (cancelFlag.load()) return false;
     }
 
-    // Essai 2 : libcurl en mémoire (pour FTP et en secours HTTP/HTTPS)
-    CURL* curl = curl_easy_init();
-    if (!curl) return false;
+    // Essai 2 : libcurl en mémoire dans un thread court (pour FTP et en secours HTTP/HTTPS)
+    static bool s_curlInited = false;
+    if (!s_curlInited) {
+        curl_global_init(CURL_GLOBAL_ALL);
+        s_curlInited = true;
+    }
 
-    CurlWriteContext writeCtx{&outData};
-    CurlProgressContext progCtx{&cancelFlag, progressCb};
+    bool curlSuccess = false;
+    QEventLoop curlLoop;
+    QThread* curlThread = QThread::create([&]() {
+        CURL* curl = curl_easy_init();
+        if (!curl) return;
 
-    QByteArray urlUtf8 = urlStr.toUtf8();
-    curl_easy_setopt(curl, CURLOPT_URL, urlUtf8.constData());
-    curl_easy_setopt(curl, CURLOPT_USERAGENT, userAgent.constData());
-    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, curlWriteToByteArray);
-    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &writeCtx);
-    curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
-    curl_easy_setopt(curl, CURLOPT_MAXREDIRS, 6L);
-    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
-    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
-    curl_easy_setopt(curl, CURLOPT_FTP_USE_EPSV, 1L);
-    curl_easy_setopt(curl, CURLOPT_FTP_USE_EPRT, 0L);
-    curl_easy_setopt(curl, CURLOPT_FAILONERROR, 1L);
-    curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
-    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT_MS, static_cast<long>(std::min(timeoutMs, 10000)));
-    curl_easy_setopt(curl, CURLOPT_LOW_SPEED_LIMIT, 100L);
-    curl_easy_setopt(curl, CURLOPT_LOW_SPEED_TIME, 12L);
-    curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
-    curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, curlXferInfoCallback);
-    curl_easy_setopt(curl, CURLOPT_XFERINFODATA, &progCtx);
+        auto safeProgressCb = [&](qint64 dlNow, qint64 dlTot) {
+            if (progressCb && dlTot > 0) {
+                QMetaObject::invokeMethod(&curlLoop, [progressCb, dlNow, dlTot]() {
+                    progressCb(dlNow, dlTot);
+                }, Qt::QueuedConnection);
+            }
+        };
 
-    CURLcode res = curl_easy_perform(curl);
-    curl_easy_cleanup(curl);
+        CurlWriteContext writeCtx{&outData};
+        CurlProgressContext progCtx{&cancelFlag, safeProgressCb};
 
-    if (res != CURLE_OK || outData.isEmpty()) {
+        QByteArray urlUtf8 = urlStr.toUtf8();
+        curl_easy_setopt(curl, CURLOPT_URL, urlUtf8.constData());
+        curl_easy_setopt(curl, CURLOPT_USERAGENT, userAgent.constData());
+        curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, curlWriteToByteArray);
+        curl_easy_setopt(curl, CURLOPT_WRITEDATA, &writeCtx);
+        curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
+        curl_easy_setopt(curl, CURLOPT_MAXREDIRS, 6L);
+        curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
+        curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
+        curl_easy_setopt(curl, CURLOPT_FTP_USE_EPSV, 1L);
+        curl_easy_setopt(curl, CURLOPT_FTP_USE_EPRT, 0L);
+        curl_easy_setopt(curl, CURLOPT_FAILONERROR, 1L);
+        curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
+        curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT_MS, static_cast<long>(std::min(timeoutMs, 8000)));
+        curl_easy_setopt(curl, CURLOPT_LOW_SPEED_LIMIT, 100L);
+        curl_easy_setopt(curl, CURLOPT_LOW_SPEED_TIME, 8L);
+        curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
+        curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, curlXferInfoCallback);
+        curl_easy_setopt(curl, CURLOPT_XFERINFODATA, &progCtx);
+
+        CURLcode res = curl_easy_perform(curl);
+        curl_easy_cleanup(curl);
+
+        if (res == CURLE_OK && !outData.isEmpty()) {
+            curlSuccess = true;
+        }
+    });
+
+    QObject::connect(curlThread, &QThread::finished, &curlLoop, &QEventLoop::quit);
+    curlThread->start();
+    if (curlThread->isRunning()) {
+        curlLoop.exec();
+    }
+    curlThread->wait(1000);
+    delete curlThread;
+
+    if (!curlSuccess || outData.isEmpty()) {
         outData.clear();
         return false;
     }
@@ -302,6 +348,9 @@ bool extractTarGzToModsDir(const QByteArray& gzBytes, const QString& modsDir) {
                     outFile.write(tarBytes.constData() + dataOffset, fileSize);
                     outFile.close();
                     ++extractedCount;
+                    if ((extractedCount % 50) == 0) {
+                        QCoreApplication::processEvents(QEventLoop::AllEvents, 5);
+                    }
                 }
             }
         }
@@ -429,7 +478,7 @@ bool extractZipBufferToDir(const QByteArray& zipBytes, const QString& destSwordD
     return extractedFiles > 0;
 }
 
-// Retourne la liste ordonnée des URLs de base (HTTPS/HTTP prioritaires, FTP en secours) pour un dépôt SWORD
+// Retourne la liste ordonnée des URLs de base (HTTPS/HTTP prioritaires) pour un dépôt SWORD
 QStringList candidateBaseUrlsForRepo(const RemoteRepoInfo& repo) {
     QStringList urls;
     QString host = repo.host.trimmed();
@@ -437,14 +486,12 @@ QStringList candidateBaseUrlsForRepo(const RemoteRepoInfo& repo) {
     while (dir.endsWith('/')) dir.chop(1);
     if (!dir.startsWith('/')) dir.prepend('/');
 
-    // Miroirs officiels HTTPS/HTTP connus
+    // Miroirs officiels HTTPS/HTTP connus (sans repli FTP port 21 qui déclenche le pare-feu Windows)
     if (host.compare("ftp.crosswire.org", Qt::CaseInsensitive) == 0 ||
         host.compare("crosswire.org", Qt::CaseInsensitive) == 0) {
         QString httpDir = dir.startsWith("/ftpmirror") ? dir : ("/ftpmirror" + dir);
-        QString ftpDir = dir.startsWith("/ftpmirror") ? dir.mid(10) : dir;
         urls << QString("https://crosswire.org%1").arg(httpDir);
         urls << QString("http://crosswire.org%1").arg(httpDir);
-        urls << QString("ftp://ftp.crosswire.org%1").arg(ftpDir);
         return urls;
     }
 
@@ -452,28 +499,22 @@ QStringList candidateBaseUrlsForRepo(const RemoteRepoInfo& repo) {
         host.compare("ebible.org", Qt::CaseInsensitive) == 0) {
         urls << QString("https://ebible.org%1").arg(dir);
         urls << QString("http://ebible.org%1").arg(dir);
-        urls << QString("ftp://ftp.ebible.org%1").arg(dir);
         return urls;
     }
 
     if (host.compare("ftp.xiphos.org", Qt::CaseInsensitive) == 0) {
         urls << QString("http://ftp.xiphos.org%1").arg(dir);
-        urls << QString("ftp://ftp.xiphos.org%1").arg(dir);
         return urls;
     }
 
     if (repo.type.startsWith("HTTPS", Qt::CaseInsensitive)) {
         urls << QString("https://%1%2").arg(host, dir);
         urls << QString("http://%1%2").arg(host, dir);
-        urls << QString("ftp://%1%2").arg(host, dir);
     } else if (repo.type.startsWith("HTTP", Qt::CaseInsensitive)) {
         urls << QString("http://%1%2").arg(host, dir);
         urls << QString("https://%1%2").arg(host, dir);
-        urls << QString("ftp://%1%2").arg(host, dir);
     } else {
         urls << QString("ftp://%1%2").arg(host, dir);
-        urls << QString("https://%1%2").arg(host, dir);
-        urls << QString("http://%1%2").arg(host, dir);
     }
     return urls;
 }
@@ -705,7 +746,7 @@ void ModuleInstallerDialog::ensureDefaultInstallMgrConf(const QString& installMg
         if (existing.open(QIODevice::ReadOnly | QIODevice::Text)) {
             QString content = QString::fromUtf8(existing.readAll());
             existing.close();
-            if (content.contains("CatalogConfigVersion=2")) {
+            if (content.contains("CatalogConfigVersion=3")) {
                 return;
             }
             static const QSet<QString> builtInCaptions = {
@@ -736,9 +777,9 @@ void ModuleInstallerDialog::ensureDefaultInstallMgrConf(const QString& installMg
     QTextStream out(&f);
     out << "[General]\n"
         << "PassiveFTP=true\n"
-        << "TimeoutMillis=15000\n"
+        << "TimeoutMillis=12000\n"
         << "UnverifiedPeerAllowed=true\n"
-        << "CatalogConfigVersion=2\n\n"
+        << "CatalogConfigVersion=3\n\n"
         << "[Sources]\n"
         << "HTTPSSource=CrossWire|crosswire.org|/ftpmirror/pub/sword/raw|||20081216195754\n"
         << "HTTPSSource=eBible.org|ebible.org|/sword|||20151110161300\n"
@@ -748,9 +789,7 @@ void ModuleInstallerDialog::ensureDefaultInstallMgrConf(const QString& installMg
         << "HTTPSSource=CrossWire Wycliffe|crosswire.org|/ftpmirror/pub/sword/wyclifferaw|||20120711005000\n"
         << "HTTPSSource=CrossWire Attic|crosswire.org|/ftpmirror/pub/sword/atticraw|||20120224005100\n"
         << "HTTPSSource=CrossWire Beta|crosswire.org|/ftpmirror/pub/sword/betaraw|||20090224125400\n"
-        << "HTTPSSource=Deutsche Bibelgesellschaft|crosswire.org|/ftpmirror/pub/sword/dbgraw|||20171021160700\n"
-        << "FTPSource=STEP Bible|ftp.stepbible.org|/pub/sword|||20240314004500\n"
-        << "FTPSource=IBT|ftp.ibt.org.ru|/pub/modsword/raw|||20120224005200\n";
+        << "HTTPSSource=Deutsche Bibelgesellschaft|crosswire.org|/ftpmirror/pub/sword/dbgraw|||20171021160700\n";
     for (const QString& custom : customLines) {
         out << custom << "\n";
     }
@@ -1186,6 +1225,11 @@ ModuleInstallerDialog::~ModuleInstallerDialog() {
     }
 }
 
+void ModuleInstallerDialog::reject() {
+    m_cancelRequested = true;
+    QDialog::reject();
+}
+
 void ModuleInstallerDialog::loadCatalogFromDisk() {
     m_updatingUi = true;
     m_repos.clear();
@@ -1325,7 +1369,7 @@ void ModuleInstallerDialog::loadCatalogFromDisk() {
 
     // 5. Si aucun catalogue distant n'est encore en cache (premier lancement sous Windows/Linux),
     //    lancer automatiquement l'actualisation en ligne !
-    if (totalRemoteCached == 0 && !m_autoRefreshTriggered && (!m_workerThread || !m_workerThread->isRunning())) {
+    if (totalRemoteCached == 0 && !m_autoRefreshTriggered && !m_isBusy) {
         m_autoRefreshTriggered = true;
         QTimer::singleShot(250, this, &ModuleInstallerDialog::onRefreshSelectedSourcesFromInternet);
     }
@@ -1672,12 +1716,12 @@ void ModuleInstallerDialog::onAddCustomSource() {
 }
 
 void ModuleInstallerDialog::setBusyState(bool busy, const QString& statusMsg) {
+    m_isBusy = busy;
     m_refreshSourcesBtn->setEnabled(!busy);
     m_addSourceBtn->setEnabled(!busy);
     m_starterPackBtn->setEnabled(!busy);
     m_installBtn->setEnabled(!busy && !m_checkedModulesToSource.isEmpty());
     m_uninstallBtn->setEnabled(!busy && !m_checkedModulesToSource.isEmpty());
-    m_closeBtn->setEnabled(!busy);
     m_cancelBtn->setVisible(busy);
     m_progressBar->setVisible(busy);
     if (!statusMsg.isEmpty()) {
@@ -1687,10 +1731,12 @@ void ModuleInstallerDialog::setBusyState(bool busy, const QString& statusMsg) {
 
 void ModuleInstallerDialog::onCancelOperation() {
     m_cancelRequested = true;
-    m_statusLabel->setText("⏹ Arrêt demandé... Fin du transfert en cours...");
+    m_statusLabel->setText("⏹ Arrêt immédiat du transfert...");
 }
 
 void ModuleInstallerDialog::onRefreshSelectedSourcesFromInternet() {
+    if (m_isBusy) return;
+
     QVector<RemoteRepoInfo> reposToRefresh;
     for (const auto& repo : m_repos) {
         if (m_checkedSources.contains(repo.caption)) {
@@ -1705,85 +1751,105 @@ void ModuleInstallerDialog::onRefreshSelectedSourcesFromInternet() {
 
     m_cancelRequested = false;
     setBusyState(true, "⏳ Connexion HTTPS/HTTP aux dépôts en ligne et actualisation des catalogues...");
-    m_progressBar->setRange(0, reposToRefresh.size());
-    m_progressBar->setValue(0);
+    m_progressBar->setRange(0, 100);
+    m_progressBar->setValue(2);
+    QCoreApplication::processEvents();
 
-    QString installMgrDir = m_installMgrDir;
+    QPointer<ModuleInstallerDialog> self(this);
+    const QString installMgrDir = m_installMgrDir;
+    int done = 0;
+    int okCount = 0;
+    const int total = reposToRefresh.size();
 
-    m_workerThread = QThread::create([this, installMgrDir, reposToRefresh]() {
-        int done = 0;
-        int okCount = 0;
-        const int total = reposToRefresh.size();
+    for (const RemoteRepoInfo& repo : reposToRefresh) {
+        if (!self || m_cancelRequested.load()) break;
 
-        for (const RemoteRepoInfo& repo : reposToRefresh) {
-            if (m_cancelRequested.load()) break;
+        const QString cap = repo.caption;
+        int startPct = std::max(2, int((done * 100) / std::max(1, total)));
+        m_statusLabel->setText(QString("🔄 Actualisation du catalogue « %1 » (%2/%3)...").arg(cap).arg(done + 1).arg(total));
+        m_progressBar->setValue(startPct);
+        QCoreApplication::processEvents();
 
-            QMetaObject::invokeMethod(this, [this, cap = repo.caption, done, total]() {
-                m_statusLabel->setText(QString("🔄 Actualisation du catalogue « %1 » (%2/%3)...").arg(cap).arg(done + 1).arg(total));
-                m_progressBar->setValue(done);
-            }, Qt::QueuedConnection);
+        bool repoUpdated = false;
+        const QString targetModsDir = installMgrDir + "/" + repo.uid + "/mods.d";
+        const QStringList baseUrls = candidateBaseUrlsForRepo(repo);
 
-            bool repoUpdated = false;
-            const QString targetModsDir = installMgrDir + "/" + repo.uid + "/mods.d";
-            const QStringList baseUrls = candidateBaseUrlsForRepo(repo);
+        for (const QString& baseUrl : baseUrls) {
+            if (!self || m_cancelRequested.load()) break;
+            QString tarGzUrl = baseUrl + "/mods.d.tar.gz";
 
-            for (const QString& baseUrl : baseUrls) {
-                if (m_cancelRequested.load()) break;
-                QString tarGzUrl = baseUrl + "/mods.d.tar.gz";
+            QByteArray gzBytes;
+            auto progCb = [self, cap, done, total](qint64 dlNow, qint64 dlTotal) {
+                if (!self) return;
+                if (dlTotal > 0) {
+                    int repoPct = int((dlNow * 100LL) / dlTotal);
+                    int overallPct = int(((done * 100) + repoPct) / std::max(1, total));
+                    self->m_statusLabel->setText(
+                        QString("🔄 Actualisation de « %1 » (%2/%3) — %4 / %5 Ko")
+                            .arg(cap)
+                            .arg(done + 1)
+                            .arg(total)
+                            .arg(dlNow / 1024)
+                            .arg(dlTotal / 1024)
+                    );
+                    self->m_progressBar->setValue(std::clamp(overallPct, 2, 99));
+                }
+            };
 
-                QByteArray gzBytes;
-                auto progCb = [this, cap = repo.caption, done, total](qint64 dlNow, qint64 dlTotal) {
-                    if (dlTotal > 0) {
-                        QMetaObject::invokeMethod(this, [this, cap, done, total, dlNow, dlTotal]() {
-                            m_statusLabel->setText(
-                                QString("🔄 Actualisation de « %1 » (%2/%3) — %4 / %5 Ko")
-                                    .arg(cap)
-                                    .arg(done + 1)
-                                    .arg(total)
-                                    .arg(dlNow / 1024)
-                                    .arg(dlTotal / 1024)
-                            );
-                        }, Qt::QueuedConnection);
-                    }
-                };
-
-                if (downloadUrlToBytes(tarGzUrl, gzBytes, m_cancelRequested, progCb, 12000)) {
-                    if (extractTarGzToModsDir(gzBytes, targetModsDir)) {
-                        repoUpdated = true;
-                        break;
-                    }
+            if (downloadUrlToBytes(tarGzUrl, gzBytes, m_cancelRequested, progCb, 12000)) {
+                if (!self || m_cancelRequested.load()) break;
+                if (extractTarGzToModsDir(gzBytes, targetModsDir)) {
+                    repoUpdated = true;
+                    break;
                 }
             }
-
-            if (repoUpdated) {
-                ++okCount;
-            }
-            ++done;
-
-            QMetaObject::invokeMethod(this, [this, done]() {
-                m_progressBar->setValue(done);
-            }, Qt::QueuedConnection);
         }
 
-        QMetaObject::invokeMethod(this, [this, okCount, total]() {
-            loadCatalogFromDisk();
-            setBusyState(
-                false,
-                QString("✅ Catalogues actualisés (%1/%2 dépôts en ligne mis à jour — %3 modules disponibles).")
-                    .arg(okCount)
-                    .arg(total)
-                    .arg(m_allModules.size())
-            );
-        }, Qt::QueuedConnection);
-    });
+        if (!self) return;
 
-    connect(m_workerThread, &QThread::finished, m_workerThread, &QObject::deleteLater);
-    connect(m_workerThread, &QThread::finished, this, [this]() { m_workerThread = nullptr; });
-    m_workerThread->start();
+        if (repoUpdated) {
+            ++okCount;
+            // Mettre à jour en direct le compteur de modules du dépôt dans la liste de gauche
+            QDir repoModsDir(targetModsDir);
+            int modCount = std::max(0, int(repoModsDir.entryInfoList({"*.conf"}, QDir::Files).size()) - 1);
+            for (int r = 0; r < m_sourceListWidget->count(); ++r) {
+                QListWidgetItem* sItem = m_sourceListWidget->item(r);
+                if (sItem && sItem->data(Qt::UserRole).toString() == cap) {
+                    sItem->setText(QString("%1 (%2 modules) — %3").arg(cap).arg(modCount).arg(repo.host));
+                    break;
+                }
+            }
+        }
+        ++done;
+        m_progressBar->setValue(std::clamp(int((done * 100) / std::max(1, total)), 5, 100));
+        QCoreApplication::processEvents();
+    }
+
+    if (!self) return;
+
+    const bool wasCancelled = m_cancelRequested.load();
+    loadCatalogFromDisk();
+    if (wasCancelled) {
+        setBusyState(
+            false,
+            QString("⏹ Actualisation interrompue (%1/%2 dépôts mis à jour — %3 modules disponibles).")
+                .arg(okCount)
+                .arg(total)
+                .arg(m_allModules.size())
+        );
+    } else {
+        setBusyState(
+            false,
+            QString("✅ Catalogues actualisés (%1/%2 dépôts en ligne mis à jour — %3 modules disponibles).")
+                .arg(okCount)
+                .arg(total)
+                .arg(m_allModules.size())
+        );
+    }
 }
 
 void ModuleInstallerDialog::onInstallCheckedModules() {
-    if (m_checkedModulesToSource.isEmpty()) return;
+    if (m_isBusy || m_checkedModulesToSource.isEmpty()) return;
 
     struct InstallTask {
         CatalogModuleItem modItem;
@@ -1827,130 +1893,110 @@ void ModuleInstallerDialog::onInstallCheckedModules() {
     m_cancelRequested = false;
     setBusyState(true, QString("📥 Téléchargement et installation de %1 module(s)...").arg(tasks.size()));
     m_progressBar->setRange(0, 100);
-    m_progressBar->setValue(0);
+    m_progressBar->setValue(2);
+    QCoreApplication::processEvents();
 
-    QString installMgrDir = m_installMgrDir;
-    QString destSwordDir = m_engine ? m_engine->swordPath() : (QDir::homePath() + "/.sword");
+    QPointer<ModuleInstallerDialog> self(this);
+    const QString destSwordDir = m_engine ? m_engine->swordPath() : (QDir::homePath() + "/.sword");
 
-    m_workerThread = QThread::create([this, installMgrDir, destSwordDir, tasks]() {
-        QDir().mkpath(destSwordDir + "/mods.d");
-        QDir().mkpath(destSwordDir + "/modules");
+    QDir().mkpath(destSwordDir + "/mods.d");
+    QDir().mkpath(destSwordDir + "/modules");
 
-        int successCount = 0;
-        QStringList installedNames;
-        const int total = tasks.size();
+    int successCount = 0;
+    QStringList installedNames;
+    const int total = tasks.size();
 
-        for (int i = 0; i < total; ++i) {
-            if (m_cancelRequested.load()) break;
-            const CatalogModuleItem& modItem = tasks[i].modItem;
-            const RemoteRepoInfo& repo = tasks[i].repo;
-            const QString modName = modItem.name;
-            const QString srcCap = repo.caption;
+    for (int i = 0; i < total; ++i) {
+        if (!self || m_cancelRequested.load()) break;
+        const CatalogModuleItem& modItem = tasks[i].modItem;
+        const RemoteRepoInfo& repo = tasks[i].repo;
+        const QString modName = modItem.name;
+        const QString srcCap = repo.caption;
 
-            QMetaObject::invokeMethod(this, [this, modName, srcCap, i, total]() {
-                m_statusLabel->setText(
-                    QString("📥 Téléchargement de « %1 » depuis %2 (%3/%4)...")
+        m_statusLabel->setText(
+            QString("📥 Téléchargement de « %1 » depuis %2 (%3/%4)...")
+                .arg(modName, srcCap)
+                .arg(i + 1)
+                .arg(total)
+        );
+        m_progressBar->setValue(std::max(2, int((i * 100) / std::max(1, total))));
+        QCoreApplication::processEvents();
+
+        auto progCb = [self, modName, srcCap, i, total](qint64 dlNow, qint64 dlTotal) {
+            if (!self) return;
+            if (dlTotal > 0) {
+                int modPct = int((dlNow * 100LL) / dlTotal);
+                int overallPct = int(((i * 100) + modPct) / std::max(1, total));
+                self->m_statusLabel->setText(
+                    QString("📥 Téléchargement de « %1 » depuis %2 (%3/%4) — %5 / %6 Ko")
                         .arg(modName, srcCap)
                         .arg(i + 1)
                         .arg(total)
+                        .arg(dlNow / 1024)
+                        .arg(dlTotal / 1024)
                 );
-                m_progressBar->setValue(int((i * 100) / std::max(1, total)));
-            }, Qt::QueuedConnection);
+                self->m_progressBar->setValue(std::clamp(overallPct, 2, 99));
+            }
+        };
 
-            auto progCb = [this, modName, srcCap, i, total](qint64 dlNow, qint64 dlTotal) {
-                if (dlTotal > 0) {
-                    int modPct = int((dlNow * 100LL) / dlTotal);
-                    int overallPct = int(((i * 100) + modPct) / std::max(1, total));
-                    QMetaObject::invokeMethod(this, [this, modName, srcCap, i, total, dlNow, dlTotal, overallPct]() {
-                        m_statusLabel->setText(
-                            QString("📥 Téléchargement de « %1 » depuis %2 (%3/%4) — %5 / %6 Ko")
-                                .arg(modName, srcCap)
-                                .arg(i + 1)
-                                .arg(total)
-                                .arg(dlNow / 1024)
-                                .arg(dlTotal / 1024)
-                        );
-                        m_progressBar->setValue(std::clamp(overallPct, 0, 100));
-                    }, Qt::QueuedConnection);
-                }
-            };
+        bool installedOk = false;
 
-            bool installedOk = false;
-
-            // Étape 1 (Prioritaire) : Téléchargement de l'archive .zip du module via HTTPS/HTTP/FTP
-            const QStringList zipUrls = candidateZipUrlsForModule(repo, modName);
-            for (const QString& zipUrl : zipUrls) {
-                if (m_cancelRequested.load()) break;
-                QByteArray zipBytes;
-                if (downloadUrlToBytes(zipUrl, zipBytes, m_cancelRequested, progCb, 20000)) {
-                    if (extractZipBufferToDir(zipBytes, destSwordDir)) {
-                        // S'assurer que le fichier .conf est bien présent dans destSwordDir/mods.d
-                        if (!modItem.confFilePath.isEmpty() && QFileInfo::exists(modItem.confFilePath)) {
-                            QString destConfFile = destSwordDir + "/mods.d/" + QFileInfo(modItem.confFilePath).fileName();
-                            if (!QFileInfo::exists(destConfFile)) {
-                                QFile::copy(modItem.confFilePath, destConfFile);
-                            }
+        // Étape 1 (Prioritaire) : Téléchargement de l'archive .zip du module via HTTPS/HTTP
+        const QStringList zipUrls = candidateZipUrlsForModule(repo, modName);
+        for (const QString& zipUrl : zipUrls) {
+            if (!self || m_cancelRequested.load()) break;
+            QByteArray zipBytes;
+            if (downloadUrlToBytes(zipUrl, zipBytes, m_cancelRequested, progCb, 20000)) {
+                if (!self || m_cancelRequested.load()) break;
+                if (extractZipBufferToDir(zipBytes, destSwordDir)) {
+                    // S'assurer que le fichier .conf est bien présent dans destSwordDir/mods.d
+                    if (!modItem.confFilePath.isEmpty() && QFileInfo::exists(modItem.confFilePath)) {
+                        QString destConfFile = destSwordDir + "/mods.d/" + QFileInfo(modItem.confFilePath).fileName();
+                        if (!QFileInfo::exists(destConfFile)) {
+                            QFile::copy(modItem.confFilePath, destConfFile);
                         }
-                        installedOk = true;
-                        break;
                     }
+                    installedOk = true;
+                    break;
                 }
-            }
-
-            // Étape 2 (Secours A) : Téléchargement direct des fichiers du dossier DataPath en HTTP/HTTPS
-            if (!installedOk && !m_cancelRequested.load()) {
-                installedOk = downloadModuleDirectoryHttp(repo, modItem, destSwordDir, m_cancelRequested, progCb);
-            }
-
-            // Étape 3 (Secours B) : Moteur InstallMgr de SWORD pour les dépôts FTP personnalisés sans archive .zip
-            if (!installedOk && !m_cancelRequested.load()) {
-                InstallMgr mgr(installMgrDir.toUtf8().constData());
-                mgr.setUserDisclaimerConfirmed(true);
-                mgr.setFTPPassive(true);
-                mgr.setUnverifiedPeerAllowed(true);
-                mgr.setTimeoutMillis(20000);
-                SWMgr destMgr(destSwordDir.toUtf8().constData());
-                auto it = mgr.sources.find(srcCap.toUtf8().constData());
-                if (it != mgr.sources.end() && it->second) {
-                    if (mgr.installModule(&destMgr, nullptr, modName.toUtf8().constData(), it->second) == 0) {
-                        installedOk = true;
-                    }
-                }
-            }
-
-            if (installedOk) {
-                ++successCount;
-                installedNames << modName;
             }
         }
 
-        QMetaObject::invokeMethod(this, [this, successCount, installedNames, total]() {
-            m_checkedModulesToSource.clear();
-            if (m_engine) {
-                m_engine->reloadModules();
-            }
-            loadCatalogFromDisk();
-            if (successCount > 0) {
-                setBusyState(
-                    false,
-                    QString("✅ %1/%2 module(s) installé(s) avec succès (%3) — Disponibles immédiatement dans vos fenêtres !")
-                        .arg(successCount)
-                        .arg(total)
-                        .arg(installedNames.join(", "))
-                );
-                emit modulesChanged();
-            } else {
-                setBusyState(
-                    false,
-                    "⚠️ Échec du téléchargement des modules sélectionnés. Vérifiez votre connexion Internet puis réessayez."
-                );
-            }
-        }, Qt::QueuedConnection);
-    });
+        // Étape 2 (Secours) : Téléchargement direct des fichiers du dossier DataPath en HTTP/HTTPS
+        if (!installedOk && self && !m_cancelRequested.load()) {
+            installedOk = downloadModuleDirectoryHttp(repo, modItem, destSwordDir, m_cancelRequested, progCb);
+        }
 
-    connect(m_workerThread, &QThread::finished, m_workerThread, &QObject::deleteLater);
-    connect(m_workerThread, &QThread::finished, this, [this]() { m_workerThread = nullptr; });
-    m_workerThread->start();
+        if (installedOk) {
+            ++successCount;
+            installedNames << modName;
+        }
+    }
+
+    if (!self) return;
+
+    m_checkedModulesToSource.clear();
+    if (m_engine) {
+        m_engine->reloadModules();
+    }
+    loadCatalogFromDisk();
+    if (successCount > 0) {
+        setBusyState(
+            false,
+            QString("✅ %1/%2 module(s) installé(s) avec succès (%3) — Disponibles immédiatement dans vos fenêtres !")
+                .arg(successCount)
+                .arg(total)
+                .arg(installedNames.join(", "))
+        );
+        emit modulesChanged();
+    } else if (m_cancelRequested.load()) {
+        setBusyState(false, "⏹ Installation interrompue.");
+    } else {
+        setBusyState(
+            false,
+            "⚠️ Échec du téléchargement des modules sélectionnés. Vérifiez votre connexion Internet puis réessayez."
+        );
+    }
 }
 
 void ModuleInstallerDialog::onUninstallCheckedModules() {

@@ -114,6 +114,9 @@ for pdir in platforms styles tls iconengines imageformats; do
         cp -r "$QT_PLUGINS/$pdir" "$PKG_DIR/"
     fi
 done
+# Supprimer qopensslbackend.dll pour forcer Qt6 à utiliser le backend natif Windows Schannel (qschannelbackend.dll)
+# Cela évite le blocage (deadlock) d initialisation OpenSSL sous Windows 11 lors de l actualisation HTTPS des catalogues
+rm -f "$PKG_DIR/tls/qopensslbackend.dll"
 
 # Fonction récursive pour copier toutes les DLLs MinGW requises par AI_Bible.exe et les plugins Qt6
 copy_dll_deps() {
@@ -145,21 +148,36 @@ fi
 mkdir -p "$PKG_DIR/scripts"
 cp /workspace/scripts/live_dictation.py "$PKG_DIR/scripts/live_dictation.py"
 
+cat > "$PKG_DIR/Lancer_AI_Bible.bat" << "EOF"
+@echo off
+REM Debloque automatiquement le marqueur Internet (Zone.Identifier) sur tous les fichiers extraits
+powershell -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -Command "Get-ChildItem -Path '%~dp0' -Recurse | Unblock-File -ErrorAction SilentlyContinue" >nul 2>&1
+start "" "%~dp0AI_Bible.exe"
+EOF
+unix2dos "$PKG_DIR/Lancer_AI_Bible.bat" 2>/dev/null || sed -i "s/$/\r/" "$PKG_DIR/Lancer_AI_Bible.bat"
+
 cat > "$PKG_DIR/LISEZMOI_WINDOWS.txt" << "EOF"
 ======================================================================
    AI Bible — Logos & Lumiere (Version Portable Windows 64 bits)
 ======================================================================
 
-1. LANCEMENT :
-   Double-cliquez simplement sur "AI_Bible.exe" (aucune installation
-   compliquee requise, toutes les bibliotheques Qt6 et SWORD sont incluses).
+1. EXTRACTION & LANCEMENT SANS AVERTISSEMENT WINDOWS :
+   - IMPORTANT : Extrayez d abord le fichier .zip complet (Clic droit ->
+     "Extraire tout...") avant de lancer le programme. Ne lancez pas
+     AI_Bible.exe directement depuis l interieur de l archive .zip.
+   - Pour eviter les avertissements "Voulez-vous vraiment executer ce
+     fichier ?" de Windows :
+     * Soit avant d extraire le .zip : faites Clic droit sur le fichier
+       .zip -> Proprietes -> cochez "Debloquer" en bas -> OK.
+     * Soit lancez une premiere fois "Lancer_AI_Bible.bat", qui retire
+       automatiquement le marqueur Internet (Zone.Identifier) de tous
+       les fichiers du dossier puis demarre AI_Bible.exe.
 
 2. PREMIER DEMARRAGE & MISE EN PAGE :
-   - Choisissez votre configuration (1 Ecran ou 2 Ecrans) et votre
-     disposition de colonnes (2 Colonnes, 3 Fenetres Mixtes, 3 Colonnes
-     ou 4 Colonnes Studio).
-   - Vous pouvez changer de disposition a tout moment via le bouton
-     "Mise en page" en haut de la fenetre.
+   - Choisissez votre configuration (1, 2 ou 3 Ecrans) et votre
+     disposition de colonnes.
+   - Vous pouvez changer de disposition ou ajouter/fermer des fenetres
+     a tout moment.
 
 3. TELECHARGEMENT DES BIBLES, DICTIONNAIRES ET COMMENTAIRES :
    - Cliquez sur le bouton "Telecharger / Gerer des Modules" (en haut
@@ -171,6 +189,7 @@ cat > "$PKG_DIR/LISEZMOI_WINDOWS.txt" << "EOF"
      C:\Users\<VotreNom>\.sword
 ======================================================================
 EOF
+sed -i "s/$/\r/" "$PKG_DIR/LISEZMOI_WINDOWS.txt"
 
 cd /tmp
 rm -f /workspace/dist/AI_Bible-1.0.0-Windows-x64.zip
