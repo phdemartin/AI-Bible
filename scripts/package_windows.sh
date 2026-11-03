@@ -56,8 +56,10 @@ if [ ! -d sword-1.9.0 ]; then
 fi
 cd sword-1.9.0
 
-# Assurer la compatibilité CMake moderne et MinGW-w64
+# Assurer la compatibilité CMake moderne et MinGW-w64 + corriger les bugs Windows de FileMgr::removeDir et ZipCompress
 sed -i "s/cmake_minimum_required(VERSION 2.6.0)/cmake_minimum_required(VERSION 3.5)/g" CMakeLists.txt || true
+sed -i "s/FileMgr::removeFile(targetDir);/FileMgr::removeFile(targetDir); _wrmdir((const wchar_t *)utf8ToWChar(targetDir).getRawData());/g" src/mgr/filemgr.cpp || true
+sed -i "s/FileMgr::createPathAndFile(target+\"\/globals.conf\");/FileMgr::closeFile(FileMgr::createPathAndFile(target+\"\/globals.conf\"));/g" src/mgr/installmgr.cpp || true
 
 mkdir -p build-win64 && cd build-win64
 mingw64-cmake .. \

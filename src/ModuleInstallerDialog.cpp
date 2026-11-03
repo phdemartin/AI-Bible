@@ -21,7 +21,20 @@
 #include <QDialogButtonBox>
 #include <QComboBox>
 #include <QMetaObject>
+#include <QNetworkAccessManager>
+#include <QNetworkRequest>
+#include <QNetworkReply>
+#include <QSslConfiguration>
+#include <QSslSocket>
+#include <QEventLoop>
+#include <QTimer>
+#include <QRegularExpression>
+#include <QUrl>
 #include <algorithm>
+#include <cstring>
+
+#include <zlib.h>
+#include <curl/curl.h>
 
 using namespace sword;
 
@@ -52,6 +65,630 @@ public:
     }
 };
 
+struct CurlWriteContext {
+    QByteArray* buffer = nullptr;
+};
+
+size_t curlWriteToByteArray(void* contents, size_t size, size_t nmemb, void* userp) {
+    size_t total = size * nmemb;
+    auto* ctx = static_cast<CurlWriteContext*>(userp);
+    if (ctx && ctx->buffer && total > 0) {
+        ctx->buffer->append(static_cast<const char*>(contents), static_cast<qsizetype>(total));
+    }
+    return total;
+}
+
+struct CurlProgressContext {
+    const std::atomic<bool>* cancelFlag = nullptr;
+    std::function<void(qint64, qint64)> progressCb;
+};
+
+int curlXferInfoCallback(void* clientp, curl_off_t dltotal, curl_off_t dlnow, curl_off_t, curl_off_t) {
+    auto* ctx = static_cast<CurlProgressContext*>(clientp);
+    if (!ctx) return 0;
+    if (ctx->cancelFlag && ctx->cancelFlag->load()) {
+        return 1; // Abort transfer
+    }
+    if (ctx->progressCb && dltotal > 0) {
+        ctx->progressCb(static_cast<qint64>(dlnow), static_cast<qint64>(dltotal));
+    }
+    return 0;
+}
+
+// Téléchargement robuste en mémoire :
+// 1) Utilise Qt6 QNetworkAccessManager (pile TLS native Windows Schannel / OpenSSL Linux) pour HTTP/HTTPS
+// 2) Bascule automatiquement sur libcurl en mémoire en cas d'échec ou pour les dépôts FTP
+bool downloadUrlToBytes(
+    const QString& urlStr,
+    QByteArray& outData,
+    const std::atomic<bool>& cancelFlag,
+    std::function<void(qint64, qint64)> progressCb = nullptr,
+    int timeoutMs = 15000)
+{
+    outData.clear();
+    if (cancelFlag.load()) return false;
+
+    const QByteArray userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AI-Bible/1.1";
+
+    // Essai 1 : Qt6 QNetworkAccessManager pour HTTP / HTTPS
+    if (urlStr.startsWith("http://", Qt::CaseInsensitive) || urlStr.startsWith("https://", Qt::CaseInsensitive)) {
+        QNetworkAccessManager nam;
+        QNetworkRequest req{QUrl(urlStr)};
+        req.setRawHeader("User-Agent", userAgent);
+        req.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::NoLessSafeRedirectPolicy);
+        req.setMaximumRedirectsAllowed(6);
+
+#ifndef QT_NO_SSL
+        if (QSslSocket::supportsSsl()) {
+            QSslConfiguration sslConf = QSslConfiguration::defaultConfiguration();
+            sslConf.setPeerVerifyMode(QSslSocket::VerifyNone);
+            req.setSslConfiguration(sslConf);
+        }
+#endif
+
+        QEventLoop loop;
+        QTimer inactivityTimer;
+        inactivityTimer.setSingleShot(true);
+
+        QTimer cancelCheckTimer;
+        cancelCheckTimer.setInterval(120);
+
+        QNetworkReply* reply = nam.get(req);
+
+        QObject::connect(reply, &QNetworkReply::downloadProgress, &loop, [&](qint64 received, qint64 total) {
+            inactivityTimer.start(timeoutMs);
+            if (progressCb && total > 0) {
+                progressCb(received, total);
+            }
+        });
+        QObject::connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
+        QObject::connect(&inactivityTimer, &QTimer::timeout, &loop, [&]() {
+            if (reply->isRunning()) reply->abort();
+            loop.quit();
+        });
+        QObject::connect(&cancelCheckTimer, &QTimer::timeout, &loop, [&]() {
+            if (cancelFlag.load()) {
+                if (reply->isRunning()) reply->abort();
+                loop.quit();
+            }
+        });
+
+        inactivityTimer.start(timeoutMs);
+        cancelCheckTimer.start();
+        loop.exec();
+        cancelCheckTimer.stop();
+        inactivityTimer.stop();
+
+        int httpStatus = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+        bool ok = (reply->error() == QNetworkReply::NoError && (httpStatus == 200 || httpStatus == 0));
+        if (ok) {
+            outData = reply->readAll();
+        }
+        reply->deleteLater();
+        if (ok && !outData.isEmpty()) {
+            return true;
+        }
+        outData.clear();
+        if (cancelFlag.load()) return false;
+    }
+
+    // Essai 2 : libcurl en mémoire (pour FTP et en secours HTTP/HTTPS)
+    CURL* curl = curl_easy_init();
+    if (!curl) return false;
+
+    CurlWriteContext writeCtx{&outData};
+    CurlProgressContext progCtx{&cancelFlag, progressCb};
+
+    QByteArray urlUtf8 = urlStr.toUtf8();
+    curl_easy_setopt(curl, CURLOPT_URL, urlUtf8.constData());
+    curl_easy_setopt(curl, CURLOPT_USERAGENT, userAgent.constData());
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, curlWriteToByteArray);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &writeCtx);
+    curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
+    curl_easy_setopt(curl, CURLOPT_MAXREDIRS, 6L);
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
+    curl_easy_setopt(curl, CURLOPT_FTP_USE_EPSV, 1L);
+    curl_easy_setopt(curl, CURLOPT_FTP_USE_EPRT, 0L);
+    curl_easy_setopt(curl, CURLOPT_FAILONERROR, 1L);
+    curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
+    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT_MS, static_cast<long>(std::min(timeoutMs, 10000)));
+    curl_easy_setopt(curl, CURLOPT_LOW_SPEED_LIMIT, 100L);
+    curl_easy_setopt(curl, CURLOPT_LOW_SPEED_TIME, 12L);
+    curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
+    curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, curlXferInfoCallback);
+    curl_easy_setopt(curl, CURLOPT_XFERINFODATA, &progCtx);
+
+    CURLcode res = curl_easy_perform(curl);
+    curl_easy_cleanup(curl);
+
+    if (res != CURLE_OK || outData.isEmpty()) {
+        outData.clear();
+        return false;
+    }
+    return true;
+}
+
+// Décompresse une archive .tar.gz (mods.d.tar.gz) en mémoire avec zlib et extrait tous les fichiers .conf dans modsDir
+bool extractTarGzToModsDir(const QByteArray& gzBytes, const QString& modsDir) {
+    if (gzBytes.size() < 32) return false;
+    const auto* raw = reinterpret_cast<const unsigned char*>(gzBytes.constData());
+    if (raw[0] != 0x1f || raw[1] != 0x8b) {
+        return false; // Pas un flux gzip valide
+    }
+
+    z_stream zs{};
+    zs.next_in = const_cast<Bytef*>(reinterpret_cast<const Bytef*>(gzBytes.constData()));
+    zs.avail_in = static_cast<uInt>(gzBytes.size());
+
+    if (inflateInit2(&zs, 15 + 32) != Z_OK) {
+        return false;
+    }
+
+    QByteArray tarBytes;
+    tarBytes.reserve(gzBytes.size() * 4);
+    char chunk[65536];
+    int ret = Z_OK;
+    while (ret == Z_OK) {
+        zs.next_out = reinterpret_cast<Bytef*>(chunk);
+        zs.avail_out = sizeof(chunk);
+        ret = inflate(&zs, Z_NO_FLUSH);
+        if (ret != Z_OK && ret != Z_STREAM_END) {
+            inflateEnd(&zs);
+            return false;
+        }
+        qsizetype produced = static_cast<qsizetype>(sizeof(chunk) - zs.avail_out);
+        if (produced > 0) {
+            tarBytes.append(chunk, produced);
+        }
+    }
+    inflateEnd(&zs);
+
+    if (tarBytes.size() < 512) return false;
+
+    QDir dir(modsDir);
+    if (dir.exists()) {
+        dir.removeRecursively();
+    }
+    QDir().mkpath(modsDir);
+
+    auto parseTarOctal = [](const char* p, int len) -> qint64 {
+        if (static_cast<unsigned char>(p[0]) & 0x80) {
+            // Extension GNU base-256
+            qint64 val = 0;
+            for (int i = 1; i < len; ++i) {
+                val = (val << 8) | static_cast<unsigned char>(p[i]);
+            }
+            return val;
+        }
+        qint64 val = 0;
+        for (int i = 0; i < len; ++i) {
+            char c = p[i];
+            if (c == ' ' || c == '\0') continue;
+            if (c >= '0' && c <= '7') {
+                val = (val << 3) + (c - '0');
+            }
+        }
+        return val;
+    };
+
+    int extractedCount = 0;
+    qsizetype offset = 0;
+    const qsizetype totalSize = tarBytes.size();
+
+    while (offset + 512 <= totalSize) {
+        const char* hdr = tarBytes.constData() + offset;
+        if (hdr[0] == '\0') {
+            break; // Fin de l'archive tar
+        }
+
+        qint64 fileSize = parseTarOctal(hdr + 124, 12);
+        char typeflag = hdr[156];
+
+        QString name = QString::fromUtf8(hdr, strnlen(hdr, 100));
+        QString prefix = QString::fromUtf8(hdr + 345, strnlen(hdr + 345, 155));
+        QString fullPath = prefix.isEmpty() ? name : (prefix + "/" + name);
+
+        qsizetype dataOffset = offset + 512;
+        if (fileSize < 0 || dataOffset + fileSize > totalSize) {
+            break;
+        }
+
+        if ((typeflag == '0' || typeflag == '\0') && fullPath.endsWith(".conf", Qt::CaseInsensitive) && fileSize > 0) {
+            QString baseName = QFileInfo(fullPath).fileName();
+            if (!baseName.isEmpty()) {
+                QFile outFile(modsDir + "/" + baseName);
+                if (outFile.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+                    outFile.write(tarBytes.constData() + dataOffset, fileSize);
+                    outFile.close();
+                    ++extractedCount;
+                }
+            }
+        }
+
+        qsizetype paddedData = static_cast<qsizetype>(((fileSize + 511) / 512) * 512);
+        offset = dataOffset + paddedData;
+    }
+
+    return extractedCount > 0;
+}
+
+uint16_t readLe16(const unsigned char* p) {
+    return static_cast<uint16_t>(p[0]) | (static_cast<uint16_t>(p[1]) << 8);
+}
+
+uint32_t readLe32(const unsigned char* p) {
+    return static_cast<uint32_t>(p[0]) |
+           (static_cast<uint32_t>(p[1]) << 8) |
+           (static_cast<uint32_t>(p[2]) << 16) |
+           (static_cast<uint32_t>(p[3]) << 24);
+}
+
+// Extrait une archive .zip de module SWORD (packages/<Mod>.zip) directement dans destSwordDir (~/.sword)
+bool extractZipBufferToDir(const QByteArray& zipBytes, const QString& destSwordDir) {
+    const qsizetype size = zipBytes.size();
+    if (size < 64) return false;
+    const auto* raw = reinterpret_cast<const unsigned char*>(zipBytes.constData());
+    if (raw[0] != 'P' || raw[1] != 'K' || raw[2] != 0x03 || raw[3] != 0x04) {
+        return false;
+    }
+
+    // Rechercher End of Central Directory (PK\x05\x06) depuis la fin
+    qsizetype minSearch = std::max<qsizetype>(0, size - 65557);
+    qsizetype eocdPos = -1;
+    for (qsizetype pos = size - 22; pos >= minSearch; --pos) {
+        if (raw[pos] == 'P' && raw[pos + 1] == 'K' && raw[pos + 2] == 0x05 && raw[pos + 3] == 0x06) {
+            eocdPos = pos;
+            break;
+        }
+    }
+    if (eocdPos < 0) return false;
+
+    uint16_t cdEntries = readLe16(raw + eocdPos + 10);
+    uint32_t cdOffset = readLe32(raw + eocdPos + 16);
+    if (cdOffset >= static_cast<uint32_t>(size)) return false;
+
+    int extractedFiles = 0;
+    qsizetype cdPos = static_cast<qsizetype>(cdOffset);
+
+    for (uint16_t i = 0; i < cdEntries && cdPos + 46 <= size; ++i) {
+        if (raw[cdPos] != 'P' || raw[cdPos + 1] != 'K' || raw[cdPos + 2] != 0x01 || raw[cdPos + 3] != 0x02) {
+            break;
+        }
+
+        uint16_t compMethod = readLe16(raw + cdPos + 10);
+        uint32_t compSize = readLe32(raw + cdPos + 20);
+        uint32_t uncompSize = readLe32(raw + cdPos + 24);
+        uint16_t nameLen = readLe16(raw + cdPos + 28);
+        uint16_t extraLen = readLe16(raw + cdPos + 30);
+        uint16_t commentLen = readLe16(raw + cdPos + 32);
+        uint32_t localOffset = readLe32(raw + cdPos + 42);
+
+        if (cdPos + 46 + nameLen > size) break;
+        QString entryName = QString::fromUtf8(zipBytes.constData() + cdPos + 46, nameLen);
+        entryName.replace('\\', '/');
+        while (entryName.startsWith("./")) entryName.remove(0, 2);
+        while (entryName.startsWith('/')) entryName.remove(0, 1);
+
+        cdPos += 46 + nameLen + extraLen + commentLen;
+
+        if (entryName.isEmpty() || entryName.contains("..")) continue;
+
+        QString outPath = destSwordDir + "/" + entryName;
+        if (entryName.endsWith('/')) {
+            QDir().mkpath(outPath);
+            continue;
+        }
+
+        qsizetype lPos = static_cast<qsizetype>(localOffset);
+        if (lPos + 30 > size) continue;
+        if (raw[lPos] != 'P' || raw[lPos + 1] != 'K' || raw[lPos + 2] != 0x03 || raw[lPos + 3] != 0x04) {
+            continue;
+        }
+
+        uint16_t lNameLen = readLe16(raw + lPos + 26);
+        uint16_t lExtraLen = readLe16(raw + lPos + 28);
+        qsizetype dataPos = lPos + 30 + lNameLen + lExtraLen;
+        if (dataPos + static_cast<qsizetype>(compSize) > size) continue;
+
+        QDir().mkpath(QFileInfo(outPath).absolutePath());
+
+        if (compMethod == 0) {
+            // STORED
+            QFile f(outPath);
+            if (f.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+                f.write(zipBytes.constData() + dataPos, compSize);
+                f.close();
+                ++extractedFiles;
+            }
+        } else if (compMethod == 8) {
+            // DEFLATE
+            QByteArray uncompData(static_cast<qsizetype>(uncompSize), Qt::Uninitialized);
+            z_stream zs{};
+            zs.next_in = const_cast<Bytef*>(reinterpret_cast<const Bytef*>(zipBytes.constData() + dataPos));
+            zs.avail_in = static_cast<uInt>(compSize);
+            zs.next_out = reinterpret_cast<Bytef*>(uncompData.data());
+            zs.avail_out = static_cast<uInt>(uncompSize);
+
+            if (inflateInit2(&zs, -MAX_WBITS) == Z_OK) {
+                int zret = inflate(&zs, Z_FINISH);
+                qsizetype totalOut = static_cast<qsizetype>(zs.total_out);
+                inflateEnd(&zs);
+                if (zret == Z_STREAM_END || (zret == Z_OK && totalOut == static_cast<qsizetype>(uncompSize))) {
+                    QFile f(outPath);
+                    if (f.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+                        f.write(uncompData.constData(), totalOut);
+                        f.close();
+                        ++extractedFiles;
+                    }
+                }
+            }
+        }
+    }
+
+    return extractedFiles > 0;
+}
+
+// Retourne la liste ordonnée des URLs de base (HTTPS/HTTP prioritaires, FTP en secours) pour un dépôt SWORD
+QStringList candidateBaseUrlsForRepo(const RemoteRepoInfo& repo) {
+    QStringList urls;
+    QString host = repo.host.trimmed();
+    QString dir = repo.directory.trimmed();
+    while (dir.endsWith('/')) dir.chop(1);
+    if (!dir.startsWith('/')) dir.prepend('/');
+
+    // Miroirs officiels HTTPS/HTTP connus
+    if (host.compare("ftp.crosswire.org", Qt::CaseInsensitive) == 0 ||
+        host.compare("crosswire.org", Qt::CaseInsensitive) == 0) {
+        QString httpDir = dir.startsWith("/ftpmirror") ? dir : ("/ftpmirror" + dir);
+        QString ftpDir = dir.startsWith("/ftpmirror") ? dir.mid(10) : dir;
+        urls << QString("https://crosswire.org%1").arg(httpDir);
+        urls << QString("http://crosswire.org%1").arg(httpDir);
+        urls << QString("ftp://ftp.crosswire.org%1").arg(ftpDir);
+        return urls;
+    }
+
+    if (host.compare("ftp.ebible.org", Qt::CaseInsensitive) == 0 ||
+        host.compare("ebible.org", Qt::CaseInsensitive) == 0) {
+        urls << QString("https://ebible.org%1").arg(dir);
+        urls << QString("http://ebible.org%1").arg(dir);
+        urls << QString("ftp://ftp.ebible.org%1").arg(dir);
+        return urls;
+    }
+
+    if (host.compare("ftp.xiphos.org", Qt::CaseInsensitive) == 0) {
+        urls << QString("http://ftp.xiphos.org%1").arg(dir);
+        urls << QString("ftp://ftp.xiphos.org%1").arg(dir);
+        return urls;
+    }
+
+    if (repo.type.startsWith("HTTPS", Qt::CaseInsensitive)) {
+        urls << QString("https://%1%2").arg(host, dir);
+        urls << QString("http://%1%2").arg(host, dir);
+        urls << QString("ftp://%1%2").arg(host, dir);
+    } else if (repo.type.startsWith("HTTP", Qt::CaseInsensitive)) {
+        urls << QString("http://%1%2").arg(host, dir);
+        urls << QString("https://%1%2").arg(host, dir);
+        urls << QString("ftp://%1%2").arg(host, dir);
+    } else {
+        urls << QString("ftp://%1%2").arg(host, dir);
+        urls << QString("https://%1%2").arg(host, dir);
+        urls << QString("http://%1%2").arg(host, dir);
+    }
+    return urls;
+}
+
+// Retourne la liste ordonnée des URLs d'archives .zip possibles pour un module donné
+QStringList candidateZipUrlsForModule(const RemoteRepoInfo& repo, const QString& modName) {
+    QStringList zipUrls;
+    const QStringList bases = candidateBaseUrlsForRepo(repo);
+
+    // Cas particulier IBT : /pub/modsword/raw -> /pub/modsword/rawzip/<Mod>.zip
+    if (repo.host.contains("ibt.org.ru", Qt::CaseInsensitive)) {
+        zipUrls << QString("ftp://%1/pub/modsword/rawzip/%2.zip").arg(repo.host, modName);
+    }
+
+    // Cas particulier STEP Bible : /pub/sword/zip/<Mod>.zip
+    if (repo.host.contains("stepbible.org", Qt::CaseInsensitive)) {
+        zipUrls << QString("ftp://%1/pub/sword/zip/%2.zip").arg(repo.host, modName);
+    }
+
+    for (const QString& base : bases) {
+        if (base.startsWith("http", Qt::CaseInsensitive)) {
+            zipUrls << QString("%1/packages/%2.zip").arg(base, modName);
+            zipUrls << QString("%1/zip/%2.zip").arg(base, modName);
+        }
+    }
+    for (const QString& base : bases) {
+        if (base.startsWith("ftp://", Qt::CaseInsensitive)) {
+            zipUrls << QString("%1/packages/%2.zip").arg(base, modName);
+            zipUrls << QString("%1/zip/%2.zip").arg(base, modName);
+        }
+    }
+    zipUrls.removeDuplicates();
+    return zipUrls;
+}
+
+// Secours HTTP/HTTPS : télécharge tous les fichiers du dossier DataPath d'un module
+bool downloadModuleDirectoryHttp(
+    const RemoteRepoInfo& repo,
+    const CatalogModuleItem& modItem,
+    const QString& destSwordDir,
+    const std::atomic<bool>& cancelFlag,
+    std::function<void(qint64, qint64)> progressCb)
+{
+    if (modItem.dataPath.isEmpty()) return false;
+    QString relDir = modItem.dataPath.trimmed();
+    relDir.replace('\\', '/');
+    while (relDir.startsWith("./")) relDir.remove(0, 2);
+    while (relDir.startsWith('/')) relDir.remove(0, 1);
+
+    // Pour les dictionnaires / GenBooks, DataPath pointe vers le préfixe de fichier (ex: modules/lexdict/zld/frebailly/dict)
+    QString drvLower = modItem.modDrv.toLower();
+    if (!relDir.endsWith('/') && (drvLower.contains("ld") || drvLower.contains("genbook"))) {
+        int lastSlash = relDir.lastIndexOf('/');
+        if (lastSlash > 0) {
+            relDir = relDir.left(lastSlash + 1);
+        }
+    }
+    if (!relDir.endsWith('/')) relDir += '/';
+
+    const QStringList bases = candidateBaseUrlsForRepo(repo);
+    for (const QString& base : bases) {
+        if (!base.startsWith("http", Qt::CaseInsensitive)) continue;
+        QString dirUrl = base + "/" + relDir;
+        QByteArray htmlBytes;
+        if (!downloadUrlToBytes(dirUrl, htmlBytes, cancelFlag, nullptr, 12000)) {
+            continue;
+        }
+        QString html = QString::fromUtf8(htmlBytes);
+        static const QRegularExpression rxHref(R"rx(<a\s+href="([^"?/#]+)")rx", QRegularExpression::CaseInsensitiveOption);
+        auto it = rxHref.globalMatch(html);
+        QStringList files;
+        while (it.hasNext()) {
+            QString href = it.next().captured(1).trimmed();
+            if (href.isEmpty() || href == "." || href == ".." || href.startsWith('/') || href.endsWith('/')) continue;
+            if (!files.contains(href)) files << href;
+        }
+        if (files.isEmpty()) continue;
+
+        QString targetModDir = destSwordDir + "/" + relDir;
+        QDir().mkpath(targetModDir);
+
+        int downloaded = 0;
+        for (const QString& fn : files) {
+            if (cancelFlag.load()) return false;
+            QByteArray fileData;
+            if (!downloadUrlToBytes(dirUrl + fn, fileData, cancelFlag, progressCb, 20000)) {
+                return false;
+            }
+            QFile outF(targetModDir + fn);
+            if (!outF.open(QIODevice::WriteOnly | QIODevice::Truncate)) return false;
+            outF.write(fileData);
+            outF.close();
+            ++downloaded;
+        }
+
+        if (downloaded > 0 && !modItem.confFilePath.isEmpty() && QFileInfo::exists(modItem.confFilePath)) {
+            QString destConfDir = destSwordDir + "/mods.d";
+            QDir().mkpath(destConfDir);
+            QString destConfFile = destConfDir + "/" + QFileInfo(modItem.confFilePath).fileName();
+            QFile::remove(destConfFile);
+            QFile::copy(modItem.confFilePath, destConfFile);
+            return true;
+        }
+    }
+    return false;
+}
+
+// Parseur rapide et 100% natif Qt d'un fichier .conf de module SWORD
+bool parseSwordConfFile(const QString& confFilePath, CatalogModuleItem& item) {
+    QFile f(confFilePath);
+    if (!f.open(QIODevice::ReadOnly | QIODevice::Text)) return false;
+
+    const QString content = QString::fromUtf8(f.readAll());
+    f.close();
+
+    QString modName;
+    QMap<QString, QStringList> entries;
+    QString lastKey;
+
+    const QStringList lines = content.split('\n');
+    for (QString rawLine : lines) {
+        if (rawLine.endsWith('\r')) rawLine.chop(1);
+        QString trimmed = rawLine.trimmed();
+        if (trimmed.isEmpty() || trimmed.startsWith('#') || trimmed.startsWith(';')) continue;
+
+        if (modName.isEmpty() && trimmed.startsWith('[') && trimmed.contains(']')) {
+            modName = trimmed.mid(1, trimmed.indexOf(']') - 1).trimmed();
+            continue;
+        }
+
+        int eq = rawLine.indexOf('=');
+        if (eq > 0 && !rawLine.startsWith(' ') && !rawLine.startsWith('\t')) {
+            QString k = rawLine.left(eq).trimmed();
+            QString v = rawLine.mid(eq + 1).trimmed();
+            if (v.endsWith('\\')) v.chop(1);
+            entries[k.toLower()].append(v);
+            lastKey = k.toLower();
+        } else if (!lastKey.isEmpty() && !entries[lastKey].isEmpty()) {
+            QString cont = trimmed;
+            if (cont.endsWith('\\')) cont.chop(1);
+            entries[lastKey].last() += " " + cont;
+        }
+    }
+
+    if (modName.isEmpty()) return false;
+
+    auto firstVal = [&](const char* key) -> QString {
+        auto it = entries.find(QString::fromLatin1(key).toLower());
+        if (it != entries.end() && !it->isEmpty()) return it->first();
+        return QString();
+    };
+
+    item.name = modName;
+    item.confFilePath = confFilePath;
+    item.description = firstVal("Description");
+    item.modDrv = firstVal("ModDrv");
+    item.dataPath = firstVal("DataPath");
+    item.version = firstVal("Version");
+    item.installSize = firstVal("InstallSize");
+    item.aboutText = firstVal("About");
+    item.langCode = firstVal("Lang").trimmed().toLower();
+    if (item.langCode.isEmpty()) item.langCode = "und";
+    item.isCiphered = entries.contains("cipherkey");
+
+    QString explicitType = firstVal("Type");
+    QString category = firstVal("Category");
+    QString drv = item.modDrv.toLower();
+
+    if (!explicitType.isEmpty()) {
+        item.rawType = explicitType;
+    } else if (!category.isEmpty() &&
+               category.compare("Biblical Texts", Qt::CaseInsensitive) != 0 &&
+               category.compare("Commentaries", Qt::CaseInsensitive) != 0 &&
+               category.compare("Lexicons / Dictionaries", Qt::CaseInsensitive) != 0) {
+        item.rawType = category;
+    } else if (drv == "rawtext" || drv == "rawtext4" || drv == "ztext" || drv == "ztext4") {
+        item.rawType = "Biblical Texts";
+    } else if (drv == "rawcom" || drv == "rawcom4" || drv == "zcom" || drv == "zcom4" || drv == "hrefcom") {
+        item.rawType = "Commentaries";
+    } else if (drv == "rawld" || drv == "rawld4" || drv == "zld") {
+        item.rawType = "Lexicons / Dictionaries";
+    } else {
+        item.rawType = category.isEmpty() ? QStringLiteral("Generic Books") : category;
+    }
+
+    if (item.rawType == "Biblical Texts") {
+        item.categoryKey = "BIBLE";
+        item.categoryDisplay = "📖 Bible";
+    } else if (item.rawType == "Commentaries") {
+        item.categoryKey = "COMMENTARY";
+        item.categoryDisplay = "📚 Commentaire";
+    } else if (item.rawType == "Lexicons / Dictionaries") {
+        item.categoryKey = "DICTIONARY";
+        item.categoryDisplay = "🏛️ Dictionnaire";
+    } else {
+        item.categoryKey = "OTHER";
+        item.categoryDisplay = "📓 " + item.rawType;
+    }
+
+    QStringList feats;
+    for (const QString& f : entries.value("feature")) {
+        if (!f.isEmpty() && !feats.contains(f)) feats << f;
+    }
+    for (const QString& gf : entries.value("globaloptionfilter")) {
+        if (gf.contains("Strong", Qt::CaseInsensitive) && !feats.contains("Numéros Strong")) {
+            feats << "Numéros Strong";
+        }
+        if (gf.contains("Morph", Qt::CaseInsensitive) && !feats.contains("Morphologie")) {
+            feats << "Morphologie";
+        }
+    }
+    item.featuresText = feats.join(", ");
+    return true;
+}
+
 } // namespace
 
 QString ModuleInstallerDialog::installMgrDirPath() {
@@ -62,8 +699,33 @@ void ModuleInstallerDialog::ensureDefaultInstallMgrConf(const QString& installMg
     QDir().mkpath(installMgrDir);
     QString confFile = installMgrDir + "/InstallMgr.conf";
 
-    if (QFileInfo::exists(confFile) && QFileInfo(confFile).size() > 80) {
-        return;
+    QStringList customLines;
+    if (QFileInfo::exists(confFile)) {
+        QFile existing(confFile);
+        if (existing.open(QIODevice::ReadOnly | QIODevice::Text)) {
+            QString content = QString::fromUtf8(existing.readAll());
+            existing.close();
+            if (content.contains("CatalogConfigVersion=2")) {
+                return;
+            }
+            static const QSet<QString> builtInCaptions = {
+                "CrossWire", "Crosswire", "Crosswire Bible Society",
+                "Bible.org", "STEP Bible", "Xiphos", "eBible.org",
+                "Lockman Foundation", "CrossWire Wycliffe", "CrossWire Attic",
+                "CrossWire Beta", "CrossWire av11n", "CrossWire av11n Attic",
+                "Deutsche Bibelgesellschaft", "IBT"
+            };
+            for (const QString& line : content.split('\n')) {
+                QString tr = line.trimmed();
+                if (tr.contains("Source=") || tr.contains("PackagePreference=")) {
+                    QString afterEq = tr.section('=', 1);
+                    QString cap = afterEq.section('|', 0, 0).trimmed();
+                    if (!cap.isEmpty() && !builtInCaptions.contains(cap)) {
+                        customLines << tr;
+                    }
+                }
+            }
+        }
     }
 
     QFile f(confFile);
@@ -74,23 +736,24 @@ void ModuleInstallerDialog::ensureDefaultInstallMgrConf(const QString& installMg
     QTextStream out(&f);
     out << "[General]\n"
         << "PassiveFTP=true\n"
-        << "TimeoutMillis=20000\n"
-        << "UnverifiedPeerAllowed=true\n\n"
+        << "TimeoutMillis=15000\n"
+        << "UnverifiedPeerAllowed=true\n"
+        << "CatalogConfigVersion=2\n\n"
         << "[Sources]\n"
-        << "FTPSource=CrossWire|ftp.crosswire.org|/pub/sword/raw|||20081216195754\n"
-        << "FTPSource=Bible.org|ftp.crosswire.org|/pub/bible.org/sword|||20090514005700\n"
+        << "HTTPSSource=CrossWire|crosswire.org|/ftpmirror/pub/sword/raw|||20081216195754\n"
+        << "HTTPSSource=eBible.org|ebible.org|/sword|||20151110161300\n"
+        << "HTTPSource=Xiphos|ftp.xiphos.org|/pub/xiphos|||20090514005900\n"
+        << "HTTPSSource=Bible.org|crosswire.org|/ftpmirror/pub/bible.org/sword|||20090514005700\n"
+        << "HTTPSSource=Lockman Foundation|crosswire.org|/ftpmirror/pub/sword/lockmanraw|||20190608211800\n"
+        << "HTTPSSource=CrossWire Wycliffe|crosswire.org|/ftpmirror/pub/sword/wyclifferaw|||20120711005000\n"
+        << "HTTPSSource=CrossWire Attic|crosswire.org|/ftpmirror/pub/sword/atticraw|||20120224005100\n"
+        << "HTTPSSource=CrossWire Beta|crosswire.org|/ftpmirror/pub/sword/betaraw|||20090224125400\n"
+        << "HTTPSSource=Deutsche Bibelgesellschaft|crosswire.org|/ftpmirror/pub/sword/dbgraw|||20171021160700\n"
         << "FTPSource=STEP Bible|ftp.stepbible.org|/pub/sword|||20240314004500\n"
-        << "FTPSource=Xiphos|ftp.xiphos.org|/pub/xiphos|||20090514005900\n"
-        << "FTPSource=eBible.org|ftp.ebible.org|/sword|||20151110161300\n"
-        << "FTPSource=Lockman Foundation|ftp.crosswire.org|/pub/sword/lockmanraw|||20190608211800\n"
-        << "FTPSource=CrossWire Wycliffe|ftp.crosswire.org|/pub/sword/wyclifferaw|||20120711005000\n"
-        << "FTPSource=CrossWire Attic|ftp.crosswire.org|/pub/sword/atticraw|||20120224005100\n"
-        << "FTPSource=CrossWire Beta|ftp.crosswire.org|/pub/sword/betaraw|||20090224125400\n"
-        << "FTPSource=CrossWire av11n|ftp.crosswire.org|/pub/sword/avraw|||20120224005000\n"
-        << "FTPSource=CrossWire av11n Attic|ftp.crosswire.org|/pub/sword/avatticraw|||20120711005100\n"
-        << "FTPSource=Crosswire Bible Society|ftp.crosswire.org|/pub/sword/raw|||ftp.crosswire.org\n"
-        << "FTPSource=Deutsche Bibelgesellschaft|ftp.crosswire.org|/pub/sword/dbgraw|||20171021160700\n"
         << "FTPSource=IBT|ftp.ibt.org.ru|/pub/modsword/raw|||20120224005200\n";
+    for (const QString& custom : customLines) {
+        out << custom << "\n";
+    }
     f.close();
 }
 
@@ -533,6 +1196,15 @@ void ModuleInstallerDialog::loadCatalogFromDisk() {
     QMap<QString, QString> installedVersions;
     QSet<QString> seenModuleNames;
 
+    QString destSwordDir = m_engine ? m_engine->swordPath() : (QDir::homePath() + "/.sword");
+    QDir localModsDir(destSwordDir + "/mods.d");
+    for (const QFileInfo& fi : localModsDir.entryInfoList({"*.conf"}, QDir::Files)) {
+        CatalogModuleItem locItem;
+        if (parseSwordConfFile(fi.absoluteFilePath(), locItem) && !locItem.name.isEmpty()) {
+            installedVersions.insert(locItem.name, locItem.version);
+        }
+    }
+
     SWMgr* localMgr = m_engine ? m_engine->rawMgr() : nullptr;
     if (localMgr) {
         for (const auto& pair : localMgr->Modules) {
@@ -540,143 +1212,98 @@ void ModuleInstallerDialog::loadCatalogFromDisk() {
             if (!mod) continue;
             QString name = QString::fromUtf8(mod->getName());
             QString ver = QString::fromUtf8(mod->getConfigEntry("Version") ? mod->getConfigEntry("Version") : "");
-            installedVersions.insert(name, ver);
+            if (!installedVersions.contains(name)) {
+                installedVersions.insert(name, ver);
+            }
         }
     }
 
-    // 2. Parcourir toutes les sources distantes configurées dans InstallMgr
-    InstallMgr installMgr(m_installMgrDir.toUtf8().constData());
-    installMgr.setUserDisclaimerConfirmed(true);
-
+    // 2. Lire directement InstallMgr.conf en Qt (compatible chemins Unicode Windows & Linux)
     bool firstLoadSources = m_checkedSources.isEmpty();
+    int totalRemoteCached = 0;
 
-    for (const auto& srcPair : installMgr.sources) {
-        InstallSource* is = srcPair.second;
-        if (!is) continue;
+    QFile confFile(m_installMgrDir + "/InstallMgr.conf");
+    if (confFile.open(QIODevice::ReadOnly | QIODevice::Text)) {
+        const QStringList lines = QString::fromUtf8(confFile.readAll()).split('\n');
+        confFile.close();
 
-        RemoteRepoInfo repo;
-        repo.caption = QString::fromUtf8(is->caption.c_str()).trimmed();
-        repo.type = QString::fromUtf8(is->type.c_str()).trimmed();
-        repo.host = QString::fromUtf8(is->source.c_str()).trimmed();
-        repo.directory = QString::fromUtf8(is->directory.c_str()).trimmed();
-        repo.uid = QString::fromUtf8(is->uid.c_str()).trimmed();
+        QSet<QString> seenCaptions;
+        for (const QString& rawLine : lines) {
+            QString tr = rawLine.trimmed();
+            if (tr.isEmpty() || tr.startsWith('#') || tr.startsWith('[') || !tr.contains('=')) continue;
 
-        // Éviter le doublon exact Crosswire / CrossWire
-        if (repo.caption == "Crosswire") continue;
+            QString key = tr.section('=', 0, 0).trimmed();
+            QString val = tr.section('=', 1).trimmed();
+            if (!key.endsWith("Source", Qt::CaseInsensitive) &&
+                !key.endsWith("PackagePreference", Qt::CaseInsensitive)) {
+                continue;
+            }
 
-        SWMgr* rmgr = is->getMgr();
-        if (rmgr) {
-            for (const auto& modPair : rmgr->Modules) {
-                SWModule* mod = modPair.second;
-                if (!mod) continue;
+            const QStringList parts = val.split('|');
+            if (parts.size() < 3) continue;
 
-                QString modName = QString::fromUtf8(mod->getName()).trimmed();
-                if (modName.isEmpty()) continue;
-                ++repo.cachedModCount;
+            RemoteRepoInfo repo;
+            repo.caption = parts[0].trimmed();
+            if (repo.caption.isEmpty() || repo.caption == "Crosswire" || seenCaptions.contains(repo.caption)) {
+                continue;
+            }
+            seenCaptions.insert(repo.caption);
 
-                // Si ce module a déjà été ajouté depuis un dépôt prioritaire (ex: CrossWire), ne pas le dupliquer
-                if (seenModuleNames.contains(modName)) continue;
-                seenModuleNames.insert(modName);
+            if (key.startsWith("HTTPS", Qt::CaseInsensitive)) repo.type = "HTTPS";
+            else if (key.startsWith("HTTP", Qt::CaseInsensitive)) repo.type = "HTTP";
+            else repo.type = "FTP";
 
+            repo.host = parts[1].trimmed();
+            repo.directory = parts[2].trimmed();
+            repo.uid = (parts.size() >= 6 && !parts[5].trimmed().isEmpty()) ? parts[5].trimmed() : repo.host;
+
+            QDir repoModsDir(m_installMgrDir + "/" + repo.uid + "/mods.d");
+            const QFileInfoList confFiles = repoModsDir.entryInfoList({"*.conf"}, QDir::Files, QDir::Name);
+            for (const QFileInfo& fi : confFiles) {
+                if (fi.fileName().compare("globals.conf", Qt::CaseInsensitive) == 0) continue;
                 CatalogModuleItem item;
-                item.name = modName;
-                item.description = QString::fromUtf8(mod->getDescription() ? mod->getDescription() : "").trimmed();
-                item.rawType = QString::fromUtf8(mod->getType() ? mod->getType() : "").trimmed();
-                item.langCode = QString::fromUtf8(mod->getLanguage() ? mod->getLanguage() : "und").trimmed().toLower();
-                if (item.langCode.isEmpty()) item.langCode = "und";
+                if (!parseSwordConfFile(fi.absoluteFilePath(), item)) continue;
+                ++repo.cachedModCount;
+                ++totalRemoteCached;
+
+                if (seenModuleNames.contains(item.name)) continue;
+                seenModuleNames.insert(item.name);
+
                 item.langDisplay = languageDisplayLabel(item.langCode);
-                item.version = QString::fromUtf8(mod->getConfigEntry("Version") ? mod->getConfigEntry("Version") : "");
-                item.installSize = QString::fromUtf8(mod->getConfigEntry("InstallSize") ? mod->getConfigEntry("InstallSize") : "");
-                item.aboutText = QString::fromUtf8(mod->getConfigEntry("About") ? mod->getConfigEntry("About") : "");
                 item.sourceCaption = repo.caption;
-                item.isInstalled = installedVersions.contains(modName);
+                item.isInstalled = installedVersions.contains(item.name);
                 if (item.isInstalled && !item.version.isEmpty() &&
-                    !installedVersions.value(modName).isEmpty() &&
-                    installedVersions.value(modName) != item.version) {
+                    !installedVersions.value(item.name).isEmpty() &&
+                    installedVersions.value(item.name) != item.version) {
                     item.hasUpdate = true;
                 }
-                item.isCiphered = (mod->getConfigEntry("CipherKey") != nullptr);
-
-                if (item.rawType == "Biblical Texts") {
-                    item.categoryKey = "BIBLE";
-                    item.categoryDisplay = "📖 Bible";
-                } else if (item.rawType == "Commentaries") {
-                    item.categoryKey = "COMMENTARY";
-                    item.categoryDisplay = "📚 Commentaire";
-                } else if (item.rawType == "Lexicons / Dictionaries") {
-                    item.categoryKey = "DICTIONARY";
-                    item.categoryDisplay = "🏛️ Dictionnaire";
-                } else {
-                    item.categoryKey = "OTHER";
-                    item.categoryDisplay = "📓 " + item.rawType;
-                }
-
-                QStringList feats;
-                for (auto it = mod->getConfig().lower_bound("Feature"); it != mod->getConfig().upper_bound("Feature"); ++it) {
-                    feats << QString::fromUtf8(it->second.c_str());
-                }
-                for (auto it = mod->getConfig().lower_bound("GlobalOptionFilter"); it != mod->getConfig().upper_bound("GlobalOptionFilter"); ++it) {
-                    QString gf = QString::fromUtf8(it->second.c_str());
-                    if (gf.contains("Strong", Qt::CaseInsensitive) && !feats.contains("Strong's Numbers")) {
-                        feats << "Numéros Strong";
-                    }
-                    if (gf.contains("Morph", Qt::CaseInsensitive) && !feats.contains("Morphologie")) {
-                        feats << "Morphologie";
-                    }
-                }
-                item.featuresText = feats.join(", ");
 
                 m_allModules.push_back(item);
                 m_langModuleCounts[item.langCode] += 1;
             }
-        }
 
-        m_repos.push_back(repo);
-        if (firstLoadSources) {
-            m_checkedSources.insert(repo.caption);
+            m_repos.push_back(repo);
+            if (firstLoadSources) {
+                m_checkedSources.insert(repo.caption);
+            }
         }
     }
 
-    // 3. Ajouter aussi les modules installés localement qui ne figurent dans aucun catalogue distant (ex: modules personnalisés Fr_Emmaus, Fr_Greek...)
-    if (localMgr) {
-        for (const auto& modPair : localMgr->Modules) {
-            SWModule* mod = modPair.second;
-            if (!mod) continue;
-            QString modName = QString::fromUtf8(mod->getName()).trimmed();
-            if (modName.isEmpty() || seenModuleNames.contains(modName)) continue;
-            seenModuleNames.insert(modName);
+    // 3. Ajouter aussi les modules installés localement qui ne figurent dans aucun catalogue distant
+    for (const QFileInfo& fi : localModsDir.entryInfoList({"*.conf"}, QDir::Files, QDir::Name)) {
+        CatalogModuleItem item;
+        if (!parseSwordConfFile(fi.absoluteFilePath(), item)) continue;
+        if (seenModuleNames.contains(item.name)) continue;
+        seenModuleNames.insert(item.name);
 
-            CatalogModuleItem item;
-            item.name = modName;
-            item.description = QString::fromUtf8(mod->getDescription() ? mod->getDescription() : "").trimmed();
-            item.rawType = QString::fromUtf8(mod->getType() ? mod->getType() : "").trimmed();
-            item.langCode = QString::fromUtf8(mod->getLanguage() ? mod->getLanguage() : "und").trimmed().toLower();
-            if (item.langCode.isEmpty()) item.langCode = "und";
-            item.langDisplay = languageDisplayLabel(item.langCode);
-            item.version = QString::fromUtf8(mod->getConfigEntry("Version") ? mod->getConfigEntry("Version") : "");
-            item.sourceCaption = "Installé localement";
-            item.isInstalled = true;
-
-            if (item.rawType == "Biblical Texts") {
-                item.categoryKey = "BIBLE";
-                item.categoryDisplay = "📖 Bible";
-            } else if (item.rawType == "Commentaries") {
-                item.categoryKey = "COMMENTARY";
-                item.categoryDisplay = "📚 Commentaire";
-            } else if (item.rawType == "Lexicons / Dictionaries") {
-                item.categoryKey = "DICTIONARY";
-                item.categoryDisplay = "🏛️ Dictionnaire";
-            } else {
-                item.categoryKey = "OTHER";
-                item.categoryDisplay = "📓 " + item.rawType;
-            }
-
-            m_allModules.push_back(item);
-            m_langModuleCounts[item.langCode] += 1;
-        }
-        if (firstLoadSources) {
-            m_checkedSources.insert("Installé localement");
-        }
+        item.langDisplay = languageDisplayLabel(item.langCode);
+        item.sourceCaption = "Installé localement";
+        item.isInstalled = true;
+        m_allModules.push_back(item);
+        m_langModuleCounts[item.langCode] += 1;
+    }
+    if (firstLoadSources) {
+        m_checkedSources.insert("Installé localement");
     }
 
     // 4. Remplir la liste des sources distantes
@@ -688,13 +1315,20 @@ void ModuleInstallerDialog::loadCatalogFromDisk() {
         sItem->setData(Qt::UserRole, repo.caption);
         sItem->setFlags(sItem->flags() | Qt::ItemIsUserCheckable);
         sItem->setCheckState(m_checkedSources.contains(repo.caption) ? Qt::Checked : Qt::Unchecked);
-        sItem->setToolTip(QString("Serveur : %1%2").arg(repo.host, repo.directory));
+        sItem->setToolTip(QString("Serveur : %1%2 (%3)").arg(repo.host, repo.directory, repo.type));
         m_sourceListWidget->addItem(sItem);
     }
 
     m_updatingUi = false;
     rebuildLanguageListWidget();
     rebuildModuleTreeWidget();
+
+    // 5. Si aucun catalogue distant n'est encore en cache (premier lancement sous Windows/Linux),
+    //    lancer automatiquement l'actualisation en ligne !
+    if (totalRemoteCached == 0 && !m_autoRefreshTriggered && (!m_workerThread || !m_workerThread->isRunning())) {
+        m_autoRefreshTriggered = true;
+        QTimer::singleShot(250, this, &ModuleInstallerDialog::onRefreshSelectedSourcesFromInternet);
+    }
 }
 
 void ModuleInstallerDialog::rebuildLanguageListWidget() {
@@ -960,7 +1594,8 @@ void ModuleInstallerDialog::onSelectRecommendedStarterPack() {
     m_checkedLangs.insert("mul");
 
     static const QSet<QString> recommended = {
-        "FreSegond", "FreLSG", "FreCrampon", "FreMartin", "FreBDM1744",
+        "FreSegond", "FreSegond1910", "FreLSG", "FreJND", "FreCrampon", "FreMartin", "FreBDM1744",
+        "FreStrongsGreek", "FreStrongsHebrew", "FreBailly", "FreJer",
         "SpaRV", "SpaRV1909", "SpaRVG", "LBLA",
         "KJV", "TR", "Byz", "WLC", "LXX",
         "StrongsGreek", "StrongsHebrew", "Robinson", "TSK", "MHCC"
@@ -999,11 +1634,11 @@ void ModuleInstallerDialog::onAddCustomSource() {
 
     auto* nameEdit = new QLineEdit("Mon Dépôt SWORD");
     auto* typeCombo = new QComboBox();
+    typeCombo->addItem("HTTPSSource (HTTPS sécurisé — Recommandé)", "HTTPSSource");
+    typeCombo->addItem("HTTPSource (HTTP standard)", "HTTPSource");
     typeCombo->addItem("FTPSource (FTP standard)", "FTPSource");
-    typeCombo->addItem("HTTPSPackagePreference (HTTPS)", "HTTPSPackagePreference");
-    typeCombo->addItem("HTTPPackagePreference (HTTP)", "HTTPPackagePreference");
-    auto* hostEdit = new QLineEdit("ftp.crosswire.org");
-    auto* dirEdit = new QLineEdit("/pub/sword/raw");
+    auto* hostEdit = new QLineEdit("crosswire.org");
+    auto* dirEdit = new QLineEdit("/ftpmirror/pub/sword/raw");
 
     form->addRow("Nom du dépôt :", nameEdit);
     form->addRow("Protocole :", typeCombo);
@@ -1056,54 +1691,89 @@ void ModuleInstallerDialog::onCancelOperation() {
 }
 
 void ModuleInstallerDialog::onRefreshSelectedSourcesFromInternet() {
-    QStringList selectedRepos = m_checkedSources.values();
-    selectedRepos.removeAll("Installé localement");
-    if (selectedRepos.isEmpty()) {
+    QVector<RemoteRepoInfo> reposToRefresh;
+    for (const auto& repo : m_repos) {
+        if (m_checkedSources.contains(repo.caption)) {
+            reposToRefresh.push_back(repo);
+        }
+    }
+
+    if (reposToRefresh.isEmpty()) {
         QMessageBox::information(this, "Aucun dépôt coché", "Veuillez cocher au moins un dépôt dans la liste « 🌐 2. Sites / Dépôts de modules ».");
         return;
     }
 
     m_cancelRequested = false;
-    setBusyState(true, "⏳ Connexion aux dépôts en ligne et actualisation des catalogues...");
-    m_progressBar->setRange(0, selectedRepos.size());
+    setBusyState(true, "⏳ Connexion HTTPS/HTTP aux dépôts en ligne et actualisation des catalogues...");
+    m_progressBar->setRange(0, reposToRefresh.size());
     m_progressBar->setValue(0);
 
     QString installMgrDir = m_installMgrDir;
 
-    m_workerThread = QThread::create([this, installMgrDir, selectedRepos]() {
-        QtInstallStatusReporter reporter;
-        reporter.onStageMessage = [this](const QString& msg) {
-            QMetaObject::invokeMethod(this, [this, msg]() {
-                m_statusLabel->setText("🌐 " + msg);
-            }, Qt::QueuedConnection);
-        };
-
-        InstallMgr mgr(installMgrDir.toUtf8().constData(), &reporter);
-        mgr.setUserDisclaimerConfirmed(true);
-        mgr.setFTPPassive(true);
-        mgr.setUnverifiedPeerAllowed(true);
-        mgr.setTimeoutMillis(20000);
-
+    m_workerThread = QThread::create([this, installMgrDir, reposToRefresh]() {
         int done = 0;
         int okCount = 0;
-        for (const QString& cap : selectedRepos) {
-            if (m_cancelRequested) break;
-            QMetaObject::invokeMethod(this, [this, cap, done, total = selectedRepos.size()]() {
+        const int total = reposToRefresh.size();
+
+        for (const RemoteRepoInfo& repo : reposToRefresh) {
+            if (m_cancelRequested.load()) break;
+
+            QMetaObject::invokeMethod(this, [this, cap = repo.caption, done, total]() {
                 m_statusLabel->setText(QString("🔄 Actualisation du catalogue « %1 » (%2/%3)...").arg(cap).arg(done + 1).arg(total));
                 m_progressBar->setValue(done);
             }, Qt::QueuedConnection);
 
-            auto it = mgr.sources.find(cap.toUtf8().constData());
-            if (it != mgr.sources.end() && it->second) {
-                int r = mgr.refreshRemoteSource(it->second);
-                if (r == 0) ++okCount;
+            bool repoUpdated = false;
+            const QString targetModsDir = installMgrDir + "/" + repo.uid + "/mods.d";
+            const QStringList baseUrls = candidateBaseUrlsForRepo(repo);
+
+            for (const QString& baseUrl : baseUrls) {
+                if (m_cancelRequested.load()) break;
+                QString tarGzUrl = baseUrl + "/mods.d.tar.gz";
+
+                QByteArray gzBytes;
+                auto progCb = [this, cap = repo.caption, done, total](qint64 dlNow, qint64 dlTotal) {
+                    if (dlTotal > 0) {
+                        QMetaObject::invokeMethod(this, [this, cap, done, total, dlNow, dlTotal]() {
+                            m_statusLabel->setText(
+                                QString("🔄 Actualisation de « %1 » (%2/%3) — %4 / %5 Ko")
+                                    .arg(cap)
+                                    .arg(done + 1)
+                                    .arg(total)
+                                    .arg(dlNow / 1024)
+                                    .arg(dlTotal / 1024)
+                            );
+                        }, Qt::QueuedConnection);
+                    }
+                };
+
+                if (downloadUrlToBytes(tarGzUrl, gzBytes, m_cancelRequested, progCb, 12000)) {
+                    if (extractTarGzToModsDir(gzBytes, targetModsDir)) {
+                        repoUpdated = true;
+                        break;
+                    }
+                }
+            }
+
+            if (repoUpdated) {
+                ++okCount;
             }
             ++done;
+
+            QMetaObject::invokeMethod(this, [this, done]() {
+                m_progressBar->setValue(done);
+            }, Qt::QueuedConnection);
         }
 
-        QMetaObject::invokeMethod(this, [this, okCount, total = selectedRepos.size()]() {
+        QMetaObject::invokeMethod(this, [this, okCount, total]() {
             loadCatalogFromDisk();
-            setBusyState(false, QString("✓ Catalogues actualisés (%1/%2 dépôts mis à jour).").arg(okCount).arg(total));
+            setBusyState(
+                false,
+                QString("✅ Catalogues actualisés (%1/%2 dépôts en ligne mis à jour — %3 modules disponibles).")
+                    .arg(okCount)
+                    .arg(total)
+                    .arg(m_allModules.size())
+            );
         }, Qt::QueuedConnection);
     });
 
@@ -1115,10 +1785,37 @@ void ModuleInstallerDialog::onRefreshSelectedSourcesFromInternet() {
 void ModuleInstallerDialog::onInstallCheckedModules() {
     if (m_checkedModulesToSource.isEmpty()) return;
 
-    QList<QPair<QString, QString>> tasks;
+    struct InstallTask {
+        CatalogModuleItem modItem;
+        RemoteRepoInfo repo;
+    };
+
+    QVector<InstallTask> tasks;
     for (auto it = m_checkedModulesToSource.begin(); it != m_checkedModulesToSource.end(); ++it) {
-        if (it.value() != "Installé localement") {
-            tasks.push_back({it.key(), it.value()});
+        const QString modName = it.key();
+        const QString srcCap = it.value();
+        if (srcCap == "Installé localement") continue;
+
+        CatalogModuleItem foundMod;
+        foundMod.name = modName;
+        foundMod.sourceCaption = srcCap;
+        for (const auto& m : m_allModules) {
+            if (m.name == modName) {
+                foundMod = m;
+                break;
+            }
+        }
+
+        RemoteRepoInfo foundRepo;
+        foundRepo.caption = srcCap;
+        for (const auto& r : m_repos) {
+            if (r.caption == foundMod.sourceCaption || r.caption == srcCap) {
+                foundRepo = r;
+                break;
+            }
+        }
+        if (!foundRepo.host.isEmpty()) {
+            tasks.push_back({foundMod, foundRepo});
         }
     }
 
@@ -1136,72 +1833,117 @@ void ModuleInstallerDialog::onInstallCheckedModules() {
     QString destSwordDir = m_engine ? m_engine->swordPath() : (QDir::homePath() + "/.sword");
 
     m_workerThread = QThread::create([this, installMgrDir, destSwordDir, tasks]() {
-        QtInstallStatusReporter reporter;
-        reporter.onStageMessage = [this](const QString& msg) {
-            QMetaObject::invokeMethod(this, [this, msg]() {
-                m_statusLabel->setText("📥 " + msg);
-            }, Qt::QueuedConnection);
-        };
-        reporter.onProgressUpdate = [this](unsigned long total, unsigned long completed) {
-            if (total > 0) {
-                int pct = int((completed * 100ULL) / total);
-                QMetaObject::invokeMethod(this, [this, pct]() {
-                    m_progressBar->setValue(std::clamp(pct, 0, 100));
-                }, Qt::QueuedConnection);
-            }
-        };
-
-        InstallMgr mgr(installMgrDir.toUtf8().constData(), &reporter);
-        mgr.setUserDisclaimerConfirmed(true);
-        mgr.setFTPPassive(true);
-        mgr.setUnverifiedPeerAllowed(true);
-        mgr.setTimeoutMillis(25000);
-
-        SWMgr destMgr(destSwordDir.toUtf8().constData());
+        QDir().mkpath(destSwordDir + "/mods.d");
+        QDir().mkpath(destSwordDir + "/modules");
 
         int successCount = 0;
         QStringList installedNames;
+        const int total = tasks.size();
 
-        for (int i = 0; i < tasks.size(); ++i) {
-            if (m_cancelRequested) break;
-            const QString modName = tasks[i].first;
-            const QString srcCap = tasks[i].second;
+        for (int i = 0; i < total; ++i) {
+            if (m_cancelRequested.load()) break;
+            const CatalogModuleItem& modItem = tasks[i].modItem;
+            const RemoteRepoInfo& repo = tasks[i].repo;
+            const QString modName = modItem.name;
+            const QString srcCap = repo.caption;
 
-            QMetaObject::invokeMethod(this, [this, modName, srcCap, i, total = tasks.size()]() {
+            QMetaObject::invokeMethod(this, [this, modName, srcCap, i, total]() {
                 m_statusLabel->setText(
                     QString("📥 Téléchargement de « %1 » depuis %2 (%3/%4)...")
                         .arg(modName, srcCap)
                         .arg(i + 1)
                         .arg(total)
                 );
-                m_progressBar->setValue(int((i * 100) / std::max(1, int(total))));
+                m_progressBar->setValue(int((i * 100) / std::max(1, total)));
             }, Qt::QueuedConnection);
 
-            auto it = mgr.sources.find(srcCap.toUtf8().constData());
-            if (it != mgr.sources.end() && it->second) {
-                int res = mgr.installModule(&destMgr, nullptr, modName.toUtf8().constData(), it->second);
-                if (res == 0) {
-                    ++successCount;
-                    installedNames << modName;
+            auto progCb = [this, modName, srcCap, i, total](qint64 dlNow, qint64 dlTotal) {
+                if (dlTotal > 0) {
+                    int modPct = int((dlNow * 100LL) / dlTotal);
+                    int overallPct = int(((i * 100) + modPct) / std::max(1, total));
+                    QMetaObject::invokeMethod(this, [this, modName, srcCap, i, total, dlNow, dlTotal, overallPct]() {
+                        m_statusLabel->setText(
+                            QString("📥 Téléchargement de « %1 » depuis %2 (%3/%4) — %5 / %6 Ko")
+                                .arg(modName, srcCap)
+                                .arg(i + 1)
+                                .arg(total)
+                                .arg(dlNow / 1024)
+                                .arg(dlTotal / 1024)
+                        );
+                        m_progressBar->setValue(std::clamp(overallPct, 0, 100));
+                    }, Qt::QueuedConnection);
                 }
+            };
+
+            bool installedOk = false;
+
+            // Étape 1 (Prioritaire) : Téléchargement de l'archive .zip du module via HTTPS/HTTP/FTP
+            const QStringList zipUrls = candidateZipUrlsForModule(repo, modName);
+            for (const QString& zipUrl : zipUrls) {
+                if (m_cancelRequested.load()) break;
+                QByteArray zipBytes;
+                if (downloadUrlToBytes(zipUrl, zipBytes, m_cancelRequested, progCb, 20000)) {
+                    if (extractZipBufferToDir(zipBytes, destSwordDir)) {
+                        // S'assurer que le fichier .conf est bien présent dans destSwordDir/mods.d
+                        if (!modItem.confFilePath.isEmpty() && QFileInfo::exists(modItem.confFilePath)) {
+                            QString destConfFile = destSwordDir + "/mods.d/" + QFileInfo(modItem.confFilePath).fileName();
+                            if (!QFileInfo::exists(destConfFile)) {
+                                QFile::copy(modItem.confFilePath, destConfFile);
+                            }
+                        }
+                        installedOk = true;
+                        break;
+                    }
+                }
+            }
+
+            // Étape 2 (Secours A) : Téléchargement direct des fichiers du dossier DataPath en HTTP/HTTPS
+            if (!installedOk && !m_cancelRequested.load()) {
+                installedOk = downloadModuleDirectoryHttp(repo, modItem, destSwordDir, m_cancelRequested, progCb);
+            }
+
+            // Étape 3 (Secours B) : Moteur InstallMgr de SWORD pour les dépôts FTP personnalisés sans archive .zip
+            if (!installedOk && !m_cancelRequested.load()) {
+                InstallMgr mgr(installMgrDir.toUtf8().constData());
+                mgr.setUserDisclaimerConfirmed(true);
+                mgr.setFTPPassive(true);
+                mgr.setUnverifiedPeerAllowed(true);
+                mgr.setTimeoutMillis(20000);
+                SWMgr destMgr(destSwordDir.toUtf8().constData());
+                auto it = mgr.sources.find(srcCap.toUtf8().constData());
+                if (it != mgr.sources.end() && it->second) {
+                    if (mgr.installModule(&destMgr, nullptr, modName.toUtf8().constData(), it->second) == 0) {
+                        installedOk = true;
+                    }
+                }
+            }
+
+            if (installedOk) {
+                ++successCount;
+                installedNames << modName;
             }
         }
 
-        QMetaObject::invokeMethod(this, [this, successCount, installedNames, total = tasks.size()]() {
+        QMetaObject::invokeMethod(this, [this, successCount, installedNames, total]() {
             m_checkedModulesToSource.clear();
             if (m_engine) {
                 m_engine->reloadModules();
             }
             loadCatalogFromDisk();
-            setBusyState(
-                false,
-                QString("✅ %1/%2 module(s) installé(s) avec succès (%3) — Disponibles immédiatement dans vos 4 fenêtres !")
-                    .arg(successCount)
-                    .arg(total)
-                    .arg(installedNames.join(", "))
-            );
             if (successCount > 0) {
+                setBusyState(
+                    false,
+                    QString("✅ %1/%2 module(s) installé(s) avec succès (%3) — Disponibles immédiatement dans vos fenêtres !")
+                        .arg(successCount)
+                        .arg(total)
+                        .arg(installedNames.join(", "))
+                );
                 emit modulesChanged();
+            } else {
+                setBusyState(
+                    false,
+                    "⚠️ Échec du téléchargement des modules sélectionnés. Vérifiez votre connexion Internet puis réessayez."
+                );
             }
         }, Qt::QueuedConnection);
     });
@@ -1226,13 +1968,42 @@ void ModuleInstallerDialog::onUninstallCheckedModules() {
     );
     if (ans != QMessageBox::Yes) return;
 
-    InstallMgr mgr(m_installMgrDir.toUtf8().constData());
     QString destSwordDir = m_engine ? m_engine->swordPath() : (QDir::homePath() + "/.sword");
-    SWMgr destMgr(destSwordDir.toUtf8().constData());
+    QDir localModsDir(destSwordDir + "/mods.d");
 
     int removed = 0;
     for (const QString& modName : modNames) {
-        if (mgr.removeModule(&destMgr, modName.toUtf8().constData()) == 0) {
+        bool removedOne = false;
+        for (const QFileInfo& fi : localModsDir.entryInfoList({"*.conf"}, QDir::Files)) {
+            CatalogModuleItem item;
+            if (!parseSwordConfFile(fi.absoluteFilePath(), item)) continue;
+            if (item.name.compare(modName, Qt::CaseInsensitive) != 0) continue;
+
+            if (!item.dataPath.isEmpty()) {
+                QString relDir = item.dataPath.trimmed();
+                relDir.replace('\\', '/');
+                while (relDir.startsWith("./")) relDir.remove(0, 2);
+                while (relDir.startsWith('/')) relDir.remove(0, 1);
+
+                QString drvLower = item.modDrv.toLower();
+                if (!relDir.endsWith('/') && (drvLower.contains("ld") || drvLower.contains("genbook"))) {
+                    int lastSlash = relDir.lastIndexOf('/');
+                    if (lastSlash > 0) {
+                        relDir = relDir.left(lastSlash + 1);
+                    }
+                }
+                if (relDir.startsWith("modules/") && !relDir.contains("..")) {
+                    QDir dataDir(destSwordDir + "/" + relDir);
+                    if (dataDir.exists()) {
+                        dataDir.removeRecursively();
+                    }
+                }
+            }
+            if (QFile::remove(fi.absoluteFilePath())) {
+                removedOne = true;
+            }
+        }
+        if (removedOne) {
             ++removed;
         }
     }
@@ -1247,3 +2018,4 @@ void ModuleInstallerDialog::onUninstallCheckedModules() {
         emit modulesChanged();
     }
 }
+

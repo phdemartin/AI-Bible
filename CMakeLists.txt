@@ -9,6 +9,8 @@ set(CMAKE_AUTOUIC ON)
 
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(SWORD REQUIRED sword)
+find_package(ZLIB REQUIRED)
+find_package(CURL REQUIRED)
 
 find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets Network)
 
@@ -46,6 +48,8 @@ target_link_libraries(bible_study_studio PRIVATE
     Qt6::Widgets
     Qt6::Network
     ${SWORD_LIBRARIES}
+    ZLIB::ZLIB
+    CURL::libcurl
 )
 
 if(WIN32)

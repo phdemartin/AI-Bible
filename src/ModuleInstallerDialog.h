@@ -39,6 +39,9 @@ struct CatalogModuleItem {
     QString sourceCaption;    // e.g. "CrossWire"
     QString aboutText;
     QString featuresText;
+    QString confFilePath;
+    QString dataPath;
+    QString modDrv;
     bool isInstalled = false;
     bool hasUpdate = false;
     bool isCiphered = false;
@@ -123,4 +126,5 @@ private:
     QThread* m_workerThread = nullptr;
     std::atomic<bool> m_cancelRequested{false};
     bool m_updatingUi = false;
+    bool m_autoRefreshTriggered = false;
 };
