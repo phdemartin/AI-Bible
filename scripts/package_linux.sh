@@ -17,6 +17,8 @@ DEB_ROOT="$STAGE_DIR/ai-bible_${APP_VERSION}_amd64"
 mkdir -p "$DEB_ROOT/DEBIAN"
 mkdir -p "$DEB_ROOT/usr/bin"
 mkdir -p "$DEB_ROOT/usr/share/applications"
+mkdir -p "$DEB_ROOT/usr/share/pixmaps"
+mkdir -p "$DEB_ROOT/usr/share/icons/hicolor/256x256/apps"
 mkdir -p "$DEB_ROOT/usr/share/icons/hicolor/512x512/apps"
 mkdir -p "$DEB_ROOT/usr/share/icons/hicolor/scalable/apps"
 mkdir -p "$DEB_ROOT/usr/share/ai-bible/scripts"
@@ -24,7 +26,10 @@ mkdir -p "$DEB_ROOT/usr/share/ai-bible/scripts"
 cp "$BUILD_DIR/bible_study_studio" "$DEB_ROOT/usr/bin/bible_study_studio"
 strip --strip-unneeded "$DEB_ROOT/usr/bin/bible_study_studio"
 chmod 755 "$DEB_ROOT/usr/bin/bible_study_studio"
+ln -sf "bible_study_studio" "$DEB_ROOT/usr/bin/ai-bible"
 
+cp "$PROJECT_DIR/resources/icon.png" "$DEB_ROOT/usr/share/pixmaps/ai_bible_icon.png"
+cp "$PROJECT_DIR/resources/icon.png" "$DEB_ROOT/usr/share/icons/hicolor/256x256/apps/ai_bible_icon.png"
 cp "$PROJECT_DIR/resources/icon.png" "$DEB_ROOT/usr/share/icons/hicolor/512x512/apps/ai_bible_icon.png"
 cp "$PROJECT_DIR/resources/icon.png" "$DEB_ROOT/usr/share/ai-bible/icon.png"
 cp "$PROJECT_DIR/resources/Splash_screen.png" "$DEB_ROOT/usr/share/ai-bible/Splash_screen.png"
@@ -34,16 +39,54 @@ chmod 755 "$DEB_ROOT/usr/share/ai-bible/scripts/live_dictation.py"
 
 cat > "$DEB_ROOT/usr/share/applications/ai-bible.desktop" << 'EOF'
 [Desktop Entry]
+Version=1.0
 Type=Application
 Name=AI Bible — Logos & Lumière
 GenericName=Studio d'Étude Biblique & IA
-Comment=Étude biblique multi-colonnes, téléchargeur SWORD, Grec/Hébreu Strong, Notes & IA Gemini
-Exec=/usr/bin/bible_study_studio
-Icon=ai_bible_icon
+Comment=Étude biblique multilingue (SWORD), Grec/Hébreu Strong, Commentaires et IA Gemini
+Exec=/usr/bin/bible_study_studio %U
+TryExec=/usr/bin/bible_study_studio
+Icon=/usr/share/ai-bible/icon.png
 Terminal=false
-Categories=Education;Literature;Qt;
-StartupWMClass=BibleStudyStudioMainWindow
+NoDisplay=false
+StartupNotify=true
+Categories=Utility;Education;Office;Literature;Qt;
+Keywords=Bible;SWORD;Grec;Hebreu;Strong;IA;Gemini;Logos;
+StartupWMClass=bible_study_studio
 EOF
+chmod 644 "$DEB_ROOT/usr/share/applications/ai-bible.desktop"
+
+cat > "$DEB_ROOT/DEBIAN/postinst" << 'EOF'
+#!/bin/sh
+set -e
+if command -v update-desktop-database >/dev/null 2>&1; then
+    update-desktop-database -q /usr/share/applications || true
+fi
+if command -v gtk-update-icon-cache >/dev/null 2>&1; then
+    gtk-update-icon-cache -q -t -f /usr/share/icons/hicolor || true
+fi
+if command -v xdg-desktop-menu >/dev/null 2>&1; then
+    xdg-desktop-menu forceupdate --mode system || true
+fi
+exit 0
+EOF
+chmod 755 "$DEB_ROOT/DEBIAN/postinst"
+
+cat > "$DEB_ROOT/DEBIAN/postrm" << 'EOF'
+#!/bin/sh
+set -e
+if command -v update-desktop-database >/dev/null 2>&1; then
+    update-desktop-database -q /usr/share/applications || true
+fi
+if command -v gtk-update-icon-cache >/dev/null 2>&1; then
+    gtk-update-icon-cache -q -t -f /usr/share/icons/hicolor || true
+fi
+if command -v xdg-desktop-menu >/dev/null 2>&1; then
+    xdg-desktop-menu forceupdate --mode system || true
+fi
+exit 0
+EOF
+chmod 755 "$DEB_ROOT/DEBIAN/postrm"
 
 cat > "$DEB_ROOT/DEBIAN/control" << EOF
 Package: ai-bible
@@ -85,15 +128,18 @@ cp "$PROJECT_DIR/scripts/live_dictation.py" "$APPDIR/usr/share/ai-bible/scripts/
 
 cat > "$APPDIR/ai-bible.desktop" << 'EOF'
 [Desktop Entry]
+Version=1.0
 Type=Application
 Name=AI Bible — Logos & Lumière
 GenericName=Studio d'Étude Biblique & IA
-Comment=Étude biblique multi-colonnes, téléchargeur SWORD, Grec/Hébreu Strong, Notes & IA Gemini
+Comment=Étude biblique multilingue (SWORD), Grec/Hébreu Strong, Commentaires et IA Gemini
 Exec=bible_study_studio
 Icon=ai_bible_icon
 Terminal=false
-Categories=Education;Literature;Qt;
-StartupWMClass=BibleStudyStudioMainWindow
+StartupNotify=true
+Categories=Utility;Education;Office;Literature;Qt;
+Keywords=Bible;SWORD;Grec;Hebreu;Strong;IA;Gemini;Logos;
+StartupWMClass=bible_study_studio
 EOF
 cp "$APPDIR/ai-bible.desktop" "$APPDIR/usr/share/applications/ai-bible.desktop"
 
