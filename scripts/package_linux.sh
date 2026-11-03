@@ -5,13 +5,15 @@ PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BUILD_DIR="$PROJECT_DIR/build"
 DIST_DIR="$PROJECT_DIR/dist"
 STAGE_DIR="$BUILD_DIR/packaging_linux"
+APP_VERSION="${APP_VERSION:-1.1.2}"
 
 mkdir -p "$DIST_DIR"
+rm -f "$DIST_DIR"/ai-bible_*_amd64.deb "$DIST_DIR"/AI_Bible-*-x86_64.AppImage
 rm -rf "$STAGE_DIR"
 mkdir -p "$STAGE_DIR"
 
-echo "=== 1. Création du paquet Debian (.deb) ultra-léger ==="
-DEB_ROOT="$STAGE_DIR/ai-bible_1.0.0_amd64"
+echo "=== 1. Création du paquet Debian (.deb) ultra-léger (v${APP_VERSION}) ==="
+DEB_ROOT="$STAGE_DIR/ai-bible_${APP_VERSION}_amd64"
 mkdir -p "$DEB_ROOT/DEBIAN"
 mkdir -p "$DEB_ROOT/usr/bin"
 mkdir -p "$DEB_ROOT/usr/share/applications"
@@ -43,9 +45,9 @@ Categories=Education;Literature;Qt;
 StartupWMClass=BibleStudyStudioMainWindow
 EOF
 
-cat > "$DEB_ROOT/DEBIAN/control" << 'EOF'
+cat > "$DEB_ROOT/DEBIAN/control" << EOF
 Package: ai-bible
-Version: 1.0.0
+Version: ${APP_VERSION}
 Section: education
 Priority: optional
 Architecture: amd64
@@ -53,16 +55,16 @@ Depends: libsword1v5 | libsword-common, libqt6widgets6, libqt6gui6, libqt6networ
 Recommends: python3, ffmpeg
 Maintainer: Logos & Lumiere <contact@logoslumiere.org>
 Description: AI Bible - Logos & Lumiere (Studio Biblique Exegetique & IA)
- Studio d'etude biblique multi-colonnes (1 ou 2 ecrans) avec telechargeur
- de modules SWORD integre (CrossWire, eBible, STEP Bible, Xiphos), lexiques
+ Studio d'etude biblique multi-colonnes (1, 2 ou 3 ecrans) avec telechargeur
+ de modules SWORD integre (CrossWire, eBible, Xiphos), lexiques
  Grec/Hebreu Strong, commentaires, fiches de notes personnelles indexees
- par verset et assistant exegétique IA Gemini (Francais / Espagnol / Anglais).
+ par verset et assistant exegetique IA Gemini (Francais / Espagnol / Anglais).
 EOF
 
-dpkg-deb --build --root-owner-group "$DEB_ROOT" "$DIST_DIR/ai-bible_1.0.0_amd64.deb"
-echo "-> Paquet .deb créé : $DIST_DIR/ai-bible_1.0.0_amd64.deb"
+dpkg-deb --build --root-owner-group "$DEB_ROOT" "$DIST_DIR/ai-bible_${APP_VERSION}_amd64.deb"
+echo "-> Paquet .deb créé : $DIST_DIR/ai-bible_${APP_VERSION}_amd64.deb"
 
-echo "=== 2. Création de l'AppImage autonome (AI_Bible-1.0.0-x86_64.AppImage) ==="
+echo "=== 2. Création de l'AppImage autonome (AI_Bible-${APP_VERSION}-x86_64.AppImage) ==="
 APPDIR="$STAGE_DIR/AppDir"
 mkdir -p "$APPDIR/usr/bin"
 mkdir -p "$APPDIR/usr/lib"
@@ -187,7 +189,7 @@ chmod 755 "$RUNTIME_BIN"
 SQUASHFS_IMG="$STAGE_DIR/appimage.squashfs"
 mksquashfs "$APPDIR" "$SQUASHFS_IMG" -root-owned -noappend -comp zstd -Xcompression-level 15 -quiet
 
-APPIMAGE_OUT="$DIST_DIR/AI_Bible-1.0.0-x86_64.AppImage"
+APPIMAGE_OUT="$DIST_DIR/AI_Bible-${APP_VERSION}-x86_64.AppImage"
 cat "$RUNTIME_BIN" "$SQUASHFS_IMG" > "$APPIMAGE_OUT"
 chmod 755 "$APPIMAGE_OUT"
 

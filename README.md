@@ -90,10 +90,10 @@
 
 Rendez-vous dans la section **[Releases](../../releases)** de ce dépôt GitHub pour télécharger la dernière version :
 
-1. **🪟 Windows 10 / 11 (64 bits)** — `AI_Bible-1.0.0-Windows-x64.zip` :
-   - Décompressez l'archive `.zip` et double-cliquez sur **`AI_Bible.exe`**.
+1. **🪟 Windows 10 / 11 (64 bits)** — `AI_Bible-1.1.2-Windows-x64.zip` :
+   - Décompressez l'archive `.zip` et double-cliquez sur **`Lancer_AI_Bible.bat`** ou **`AI_Bible.exe`**.
    - Cliquez sur **« 📥 Télécharger / Gérer des Modules »** (*Download / Manage Modules*) pour choisir vos langues et télécharger vos Bibles gratuitement.
-2. **🐧 Linux (Toutes distributions)** — `AI_Bible-1.0.0-x86_64.AppImage` :
-   - Rendez le fichier exécutable (`chmod +x AI_Bible-1.0.0-x86_64.AppImage`) et double-cliquez dessus.
-3. **🐧 Ubuntu / Debian / Linux Mint** — `ai-bible_1.0.0_amd64.deb` :
-   - Installez via `sudo apt install ./ai-bible_1.0.0_amd64.deb`.
+2. **🐧 Linux (Toutes distributions)** — `AI_Bible-1.1.2-x86_64.AppImage` :
+   - Rendez le fichier exécutable (`chmod +x AI_Bible-1.1.2-x86_64.AppImage`) et double-cliquez dessus.
+3. **🐧 Ubuntu / Debian / Linux Mint** — `ai-bible_1.1.2_amd64.deb` :
+   - Installez via `sudo apt install ./ai-bible_1.1.2_amd64.deb`.

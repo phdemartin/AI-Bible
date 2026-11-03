@@ -157,6 +157,7 @@ int main(int argc, char* argv[]) {
     QApplication app(argc, argv);
     app.setApplicationName("BibleStudyStudio");
     app.setApplicationDisplayName("AI Bible — Logos & Lumière");
+    app.setApplicationVersion("1.1.2");
     app.setOrganizationName("LogosLumiere");
 
     const QString appDir = QCoreApplication::applicationDirPath();

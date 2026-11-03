@@ -98,8 +98,8 @@ mingw64-cmake /workspace \
     -DQT_HOST_PATH=/usr
 make -j$(nproc)
 
-echo "-> 4. Assemblage du dossier portable Windows (AI_Bible-1.0.0-Windows-x64)..."
-PKG_DIR="/tmp/AI_Bible-1.0.0-Windows-x64"
+echo "-> 4. Assemblage du dossier portable Windows (AI_Bible-1.1.2-Windows-x64)..."
+PKG_DIR="/tmp/AI_Bible-1.1.2-Windows-x64"
 rm -rf "$PKG_DIR"
 mkdir -p "$PKG_DIR"
 
@@ -158,7 +158,7 @@ unix2dos "$PKG_DIR/Lancer_AI_Bible.bat" 2>/dev/null || sed -i "s/$/\r/" "$PKG_DI
 
 cat > "$PKG_DIR/LISEZMOI_WINDOWS.txt" << "EOF"
 ======================================================================
-   AI Bible — Logos & Lumiere (Version Portable Windows 64 bits)
+   AI Bible — Logos & Lumiere v1.1.2 (Version Portable Windows 64 bits)
 ======================================================================
 
 1. EXTRACTION & LANCEMENT SANS AVERTISSEMENT WINDOWS :
@@ -192,10 +192,10 @@ EOF
 sed -i "s/$/\r/" "$PKG_DIR/LISEZMOI_WINDOWS.txt"
 
 cd /tmp
-rm -f /workspace/dist/AI_Bible-1.0.0-Windows-x64.zip
-zip -r -q /workspace/dist/AI_Bible-1.0.0-Windows-x64.zip AI_Bible-1.0.0-Windows-x64
-chown "$HOST_UID:$HOST_GID" /workspace/dist/AI_Bible-1.0.0-Windows-x64.zip
+rm -f /workspace/dist/AI_Bible-*-Windows-x64.zip
+zip -r -q /workspace/dist/AI_Bible-1.1.2-Windows-x64.zip AI_Bible-1.1.2-Windows-x64
+chown "$HOST_UID:$HOST_GID" /workspace/dist/AI_Bible-1.1.2-Windows-x64.zip
 '
 
-echo "=== Paquet Windows créé avec succès : $DIST_DIR/AI_Bible-1.0.0-Windows-x64.zip ==="
+echo "=== Paquet Windows créé avec succès : $DIST_DIR/AI_Bible-1.1.2-Windows-x64.zip ==="
 ls -lh "$DIST_DIR"
