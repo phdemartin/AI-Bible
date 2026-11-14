@@ -289,8 +289,8 @@ protected:
 
 private slots:
     void onTypeComboChanged(int index);
-    void onPrevChapter();
-    void onNextChapter();
+    void onNavigateBack();
+    void onNavigateForward();
     void onDictManualSearch();
     void onBrowserAnchorClicked(const QUrl& url);
     void onSendCustomAiQuestion();
@@ -305,6 +305,7 @@ private:
     void copyTurnToWordProcessorClipboard(int turnIndex);
     void stopMicDictation();
     void syncHeaderControls();
+    void updateHistoryButtonsUi();
     void updateLinkButtonUi();
     void updateAiModeSwitchUi();
     void updateAiLanguageButtonsUi();
@@ -382,10 +383,15 @@ private:
     // Ligne 2 : Barre de navigation Livre / Chapitre / Verset (pour Bible, Commentaire et Notes)
     QWidget* m_navRowWidget = nullptr;
     QLabel* m_refTitleLabel = nullptr;
+    QToolButton* m_backHistoryBtn = nullptr;
+    QToolButton* m_forwardHistoryBtn = nullptr;
     QComboBox* m_bookCombo = nullptr;
     QSpinBox* m_chapterSpin = nullptr;
     QSpinBox* m_verseSpin = nullptr;
     QLineEdit* m_quickRefEdit = nullptr;
+    QVector<QString> m_navHistory;
+    int m_navHistoryIndex = -1;
+    bool m_navigatingHistory = false;
 
     // Corps principal (Page 0 = Browser standard, Page 1 = Panneau IA, Page 2 = Éditeur Notes Personnelles)
     QStackedWidget* m_bodyStack = nullptr;

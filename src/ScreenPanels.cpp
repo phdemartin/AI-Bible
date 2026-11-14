@@ -2078,15 +2078,13 @@ UniversalPaneWidget::UniversalPaneWidget(int paneIndex, SwordEngine* engine, Gem
     navRow->setSpacing(4);
 
     m_refTitleLabel = new QLabel();
-    m_refTitleLabel->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
-    m_refTitleLabel->setMinimumWidth(85);
-    m_refTitleLabel->setStyleSheet("font-weight: bold; font-size: 10pt; padding: 1px 3px;");
+    m_refTitleLabel->hide();
 
-    auto* prevBtn = new QToolButton();
-    prevBtn->setText("◀");
-    prevBtn->setToolTip(SwordEngine::uiTr("Chapitre précédent", "Previous chapter", "Capítulo anterior"));
-    prevBtn->setFixedSize(24, 24);
-    connect(prevBtn, &QToolButton::clicked, this, &UniversalPaneWidget::onPrevChapter);
+    m_backHistoryBtn = new QToolButton();
+    m_backHistoryBtn->setText("◀");
+    m_backHistoryBtn->setCursor(Qt::PointingHandCursor);
+    m_backHistoryBtn->setFixedSize(26, 24);
+    connect(m_backHistoryBtn, &QToolButton::clicked, this, &UniversalPaneWidget::onNavigateBack);
 
     m_bookCombo = new QComboBox();
     m_bookCombo->setMaxVisibleItems(28);
@@ -2105,11 +2103,11 @@ UniversalPaneWidget::UniversalPaneWidget(int paneIndex, SwordEngine* engine, Gem
     m_verseSpin->setPrefix("V. ");
     m_verseSpin->setRange(1, 176);
 
-    auto* nextBtn = new QToolButton();
-    nextBtn->setText("▶");
-    nextBtn->setToolTip(SwordEngine::uiTr("Chapitre suivant", "Next chapter", "Capítulo siguiente"));
-    nextBtn->setFixedSize(24, 24);
-    connect(nextBtn, &QToolButton::clicked, this, &UniversalPaneWidget::onNextChapter);
+    m_forwardHistoryBtn = new QToolButton();
+    m_forwardHistoryBtn->setText("▶");
+    m_forwardHistoryBtn->setCursor(Qt::PointingHandCursor);
+    m_forwardHistoryBtn->setFixedSize(26, 24);
+    connect(m_forwardHistoryBtn, &QToolButton::clicked, this, &UniversalPaneWidget::onNavigateForward);
 
     m_quickRefEdit = new QLineEdit();
     m_quickRefEdit->setPlaceholderText(
@@ -2141,12 +2139,11 @@ UniversalPaneWidget::UniversalPaneWidget(int paneIndex, SwordEngine* engine, Gem
         loadPassage(bookSword, ch, v, true, true);
     });
 
-    navRow->addWidget(m_refTitleLabel, 1);
-    navRow->addWidget(prevBtn);
+    navRow->addWidget(m_backHistoryBtn);
     navRow->addWidget(m_bookCombo, 1);
     navRow->addWidget(m_chapterSpin);
     navRow->addWidget(m_verseSpin);
-    navRow->addWidget(nextBtn);
+    navRow->addWidget(m_forwardHistoryBtn);
     navRow->addWidget(m_quickRefEdit);
     rootLayout->addWidget(m_navRowWidget);
 
@@ -2435,6 +2432,9 @@ UniversalPaneWidget::UniversalPaneWidget(int paneIndex, SwordEngine* engine, Gem
             renderGeminiConversation();
         }
     });
+
+    m_navHistory = { swordKey() };
+    m_navHistoryIndex = 0;
 
     updateLinkButtonUi();
     updateAiLanguageButtonsUi();
@@ -2823,17 +2823,100 @@ void UniversalPaneWidget::syncHeaderControls() {
     );
 
     m_updatingControls = false;
+    updateHistoryButtonsUi();
+}
+
+void UniversalPaneWidget::updateHistoryButtonsUi() {
+    if (!m_backHistoryBtn || !m_forwardHistoryBtn) return;
+
+    const bool canBack = (m_navHistoryIndex > 0 && m_navHistoryIndex < m_navHistory.size());
+    const bool canFwd  = (m_navHistoryIndex >= 0 && m_navHistoryIndex + 1 < m_navHistory.size());
+
+    m_backHistoryBtn->setEnabled(canBack);
+    m_forwardHistoryBtn->setEnabled(canFwd);
+
+    const QString activeQss =
+        "QToolButton { background-color: rgba(2, 132, 199, 0.22); color: #38BDF8; "
+        "border: 1px solid #0284C7; border-radius: 5px; font-weight: bold; }"
+        "QToolButton:hover { background-color: rgba(2, 132, 199, 0.40); color: #FFFFFF; }";
+    const QString disabledQss =
+        "QToolButton { background-color: transparent; color: #475569; "
+        "border: 1px solid #334155; border-radius: 5px; }";
+
+    m_backHistoryBtn->setStyleSheet(canBack ? activeQss : disabledQss);
+    m_forwardHistoryBtn->setStyleSheet(canFwd ? activeQss : disabledQss);
+
+    if (canBack) {
+        QString prevRef = m_engine->toFrenchReference(m_navHistory.at(m_navHistoryIndex - 1));
+        m_backHistoryBtn->setToolTip(
+            SwordEngine::uiTr("◀ Revenir à la référence précédente : %1",
+                              "◀ Back to previous reference: %1",
+                              "◀ Volver a la referencia anterior: %1").arg(prevRef)
+        );
+    } else {
+        m_backHistoryBtn->setToolTip(
+            SwordEngine::uiTr("◀ Référence précédente (historique vide)",
+                              "◀ Previous reference (history empty)",
+                              "◀ Referencia anterior (historial vacío)")
+        );
+    }
+
+    if (canFwd) {
+        QString nextRef = m_engine->toFrenchReference(m_navHistory.at(m_navHistoryIndex + 1));
+        m_forwardHistoryBtn->setToolTip(
+            SwordEngine::uiTr("▶ Aller à la référence suivante : %1",
+                              "▶ Forward to next reference: %1",
+                              "▶ Ir a la referencia siguiente: %1").arg(nextRef)
+        );
+    } else {
+        m_forwardHistoryBtn->setToolTip(
+            SwordEngine::uiTr("▶ Référence suivante (historique)",
+                              "▶ Next reference (history)",
+                              "▶ Referencia siguiente (historial)")
+        );
+    }
 }
 
 void UniversalPaneWidget::loadPassage(const QString& swordBook, int chapter, int verse, bool scrollToVerse, bool emitSignal) {
+    const QString departingKey = swordKey();
     int newCh = std::clamp(chapter, 1, m_engine->getChapterCount(swordBook));
+    int newV  = std::clamp(verse, 1, m_engine->getVerseCount(swordBook, newCh));
+    const QString arrivingKey = QString("%1 %2:%3").arg(swordBook).arg(newCh).arg(newV);
+
+    if (!m_navigatingHistory) {
+        if (m_navHistory.isEmpty() && !departingKey.isEmpty()) {
+            m_navHistory.push_back(departingKey);
+            m_navHistoryIndex = 0;
+        } else if (m_navHistoryIndex >= 0 && m_navHistoryIndex < m_navHistory.size() &&
+                   m_navHistory[m_navHistoryIndex] != departingKey && !departingKey.isEmpty()) {
+            while (m_navHistory.size() > m_navHistoryIndex + 1) {
+                m_navHistory.removeLast();
+            }
+            m_navHistory.push_back(departingKey);
+            m_navHistoryIndex = m_navHistory.size() - 1;
+        }
+
+        if (m_navHistoryIndex > 0 && m_navHistory.value(m_navHistoryIndex - 1) == arrivingKey) {
+            m_navHistoryIndex -= 1;
+        } else if (m_navHistoryIndex >= 0 && m_navHistoryIndex + 1 < m_navHistory.size() &&
+                   m_navHistory.value(m_navHistoryIndex + 1) == arrivingKey) {
+            m_navHistoryIndex += 1;
+        } else if (m_navHistoryIndex < 0 || m_navHistory.value(m_navHistoryIndex) != arrivingKey) {
+            while (m_navHistory.size() > m_navHistoryIndex + 1) {
+                m_navHistory.removeLast();
+            }
+            m_navHistory.push_back(arrivingKey);
+            m_navHistoryIndex = m_navHistory.size() - 1;
+        }
+    }
+
     bool chapterChanged = (m_book != swordBook || m_chapter != newCh);
     if (chapterChanged) {
         m_browser->clearWordHighlight();
     }
     m_book = swordBook;
     m_chapter = newCh;
-    m_verse = std::clamp(verse, 1, m_engine->getVerseCount(swordBook, m_chapter));
+    m_verse = newV;
 
     syncHeaderControls();
 
@@ -3131,35 +3214,44 @@ void UniversalPaneWidget::scrollBibleToActiveVerse() {
     m_syncingScroll = false;
 }
 
-void UniversalPaneWidget::onPrevChapter() {
-    QString targetBook = m_book;
-    int targetCh = m_chapter;
-    if (targetCh > 1) {
-        targetCh -= 1;
-    } else if (const BookInfo* b = m_engine->findBookBySwordName(targetBook)) {
-        if (b->index > 1) {
-            const BookInfo& prevBook = m_engine->getBooks().at(b->index - 2);
-            targetBook = prevBook.swordName;
-            targetCh = prevBook.chapterCount;
-        }
-    }
-    loadPassage(targetBook, targetCh, 1, true, true);
+void UniversalPaneWidget::onNavigateBack() {
+    if (m_navHistoryIndex <= 0 || m_navHistoryIndex >= m_navHistory.size()) return;
+    m_navHistoryIndex -= 1;
+    QString targetKey = m_navHistory.at(m_navHistoryIndex);
+    QString b; int c = 1, v = 1;
+    m_engine->splitSwordKey(targetKey, b, c, v);
+    if (b.isEmpty()) return;
+
+    m_navigatingHistory = true;
+    loadPassage(b, c, v, true, true);
+    m_navigatingHistory = false;
+    updateHistoryButtonsUi();
+    emit statusNotification(
+        SwordEngine::uiTr("◀ Retour à la référence précédente : %1",
+                          "◀ Returned to previous reference: %1",
+                          "◀ Regreso a la referencia anterior: %1")
+            .arg(m_engine->toFrenchReference(targetKey))
+    );
 }
 
-void UniversalPaneWidget::onNextChapter() {
-    QString targetBook = m_book;
-    int targetCh = m_chapter;
-    int maxCh = m_engine->getChapterCount(targetBook);
-    if (targetCh < maxCh) {
-        targetCh += 1;
-    } else if (const BookInfo* b = m_engine->findBookBySwordName(targetBook)) {
-        if (b->index < m_engine->getBooks().size()) {
-            const BookInfo& nextBook = m_engine->getBooks().at(b->index);
-            targetBook = nextBook.swordName;
-            targetCh = 1;
-        }
-    }
-    loadPassage(targetBook, targetCh, 1, true, true);
+void UniversalPaneWidget::onNavigateForward() {
+    if (m_navHistoryIndex < 0 || m_navHistoryIndex + 1 >= m_navHistory.size()) return;
+    m_navHistoryIndex += 1;
+    QString targetKey = m_navHistory.at(m_navHistoryIndex);
+    QString b; int c = 1, v = 1;
+    m_engine->splitSwordKey(targetKey, b, c, v);
+    if (b.isEmpty()) return;
+
+    m_navigatingHistory = true;
+    loadPassage(b, c, v, true, true);
+    m_navigatingHistory = false;
+    updateHistoryButtonsUi();
+    emit statusNotification(
+        SwordEngine::uiTr("▶ Référence suivante : %1",
+                          "▶ Forward to next reference: %1",
+                          "▶ Referencia siguiente: %1")
+            .arg(m_engine->toFrenchReference(targetKey))
+    );
 }
 
 void UniversalPaneWidget::onDictManualSearch() {
@@ -4169,6 +4261,8 @@ void UniversalPaneWidget::fromJson(const QJsonObject& obj) {
     m_book = bk;
     m_chapter = std::clamp(ch, 1, m_engine->getChapterCount(bk));
     m_verse = std::clamp(v, 1, m_engine->getVerseCount(bk, m_chapter));
+    m_navHistory = { swordKey() };
+    m_navHistoryIndex = 0;
 
     if (obj.contains("style") && obj.value("style").isObject()) {
         m_style = PaneStyle::fromJson(obj.value("style").toObject(), m_style.fontSizePt);
