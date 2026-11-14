@@ -389,6 +389,7 @@ private:
     QSpinBox* m_chapterSpin = nullptr;
     QSpinBox* m_verseSpin = nullptr;
     QLineEdit* m_quickRefEdit = nullptr;
+    QToolButton* m_quickRefGoBtn = nullptr;
     QVector<QString> m_navHistory;
     int m_navHistoryIndex = -1;
     bool m_navigatingHistory = false;

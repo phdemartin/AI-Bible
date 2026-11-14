@@ -2088,8 +2088,9 @@ UniversalPaneWidget::UniversalPaneWidget(int paneIndex, SwordEngine* engine, Gem
 
     m_bookCombo = new QComboBox();
     m_bookCombo->setMaxVisibleItems(28);
-    m_bookCombo->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
-    m_bookCombo->setMinimumContentsLength(6);
+    m_bookCombo->setSizeAdjustPolicy(QComboBox::AdjustToContents);
+    m_bookCombo->setMinimumWidth(115);
+    m_bookCombo->setMaximumWidth(165);
     m_bookCombo->setToolTip(SwordEngine::uiTr("Choisir le livre biblique", "Choose Bible book", "Elegir libro bíblico"));
     for (const auto& bk : m_engine->getBooks()) {
         m_bookCombo->addItem(SwordEngine::localizedBookName(bk), bk.swordName);
@@ -2111,10 +2112,42 @@ UniversalPaneWidget::UniversalPaneWidget(int paneIndex, SwordEngine* engine, Gem
 
     m_quickRefEdit = new QLineEdit();
     m_quickRefEdit->setPlaceholderText(
-        SwordEngine::uiTr("Aller à (Jean 11:28)...", "Go to (John 11:28)...", "Ir a (Juan 11:28)...")
+        SwordEngine::uiTr("Coller ou taper une réf. (ex: Jean 11:28)...",
+                          "Paste or type a ref. (e.g. John 11:28)...",
+                          "Pegar o escribir ref. (ej: Juan 11:28)...")
+    );
+    m_quickRefEdit->setToolTip(
+        SwordEngine::uiTr("Collez ou tapez une référence biblique (ex: Jean 11:28, Rom 8:28) puis appuyez sur Entrée ↵ ou cliquez sur le bouton ↵ à droite",
+                          "Paste or type a Bible reference (e.g. John 11:28, Rom 8:28) then press Enter ↵ or click the ↵ button on the right",
+                          "Pegue o escriba una referencia bíblica (ej: Juan 11:28, Rom 8:28) y pulse Intro ↵ o haga clic en el botón ↵ a la derecha")
     );
     m_quickRefEdit->setClearButtonEnabled(true);
-    m_quickRefEdit->setMaximumWidth(145);
+    m_quickRefEdit->setMinimumWidth(140);
+
+    m_quickRefGoBtn = new QToolButton();
+    m_quickRefGoBtn->setText("↵");
+    m_quickRefGoBtn->setCursor(Qt::PointingHandCursor);
+    m_quickRefGoBtn->setFixedSize(28, 24);
+    m_quickRefGoBtn->setToolTip(
+        SwordEngine::uiTr("Aller à la référence saisie (ou appuyez sur la touche Entrée ↵ du clavier)",
+                          "Go to the typed reference (or press the Enter ↵ key on your keyboard)",
+                          "Ir a la referencia escrita (o pulse la tecla Intro ↵ del teclado)")
+    );
+    m_quickRefGoBtn->setStyleSheet(
+        "QToolButton { background-color: rgba(16, 185, 129, 0.22); color: #34D399; "
+        "border: 1px solid #059669; border-radius: 5px; font-weight: bold; font-size: 10.5pt; }"
+        "QToolButton:hover { background-color: rgba(16, 185, 129, 0.40); color: #FFFFFF; }"
+    );
+
+    auto submitQuickRef = [this]() {
+        QString q = m_quickRefEdit->text().trimmed();
+        if (q.isEmpty()) return;
+        QString bookSword;
+        int ch = 1, v = 1;
+        m_engine->parseUserReference(q, &ch, &v, &bookSword);
+        m_quickRefEdit->clear();
+        loadPassage(bookSword, ch, v, true, true);
+    };
 
     connect(m_bookCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int idx) {
         if (m_updatingControls || idx < 0) return;
@@ -2129,22 +2162,16 @@ UniversalPaneWidget::UniversalPaneWidget(int paneIndex, SwordEngine* engine, Gem
         if (m_updatingControls) return;
         loadPassage(m_book, m_chapter, v, true, true);
     });
-    connect(m_quickRefEdit, &QLineEdit::returnPressed, this, [this]() {
-        QString q = m_quickRefEdit->text().trimmed();
-        if (q.isEmpty()) return;
-        QString bookSword;
-        int ch = 1, v = 1;
-        m_engine->parseUserReference(q, &ch, &v, &bookSword);
-        m_quickRefEdit->clear();
-        loadPassage(bookSword, ch, v, true, true);
-    });
+    connect(m_quickRefEdit, &QLineEdit::returnPressed, this, submitQuickRef);
+    connect(m_quickRefGoBtn, &QToolButton::clicked, this, submitQuickRef);
 
     navRow->addWidget(m_backHistoryBtn);
-    navRow->addWidget(m_bookCombo, 1);
+    navRow->addWidget(m_bookCombo);
     navRow->addWidget(m_chapterSpin);
     navRow->addWidget(m_verseSpin);
     navRow->addWidget(m_forwardHistoryBtn);
-    navRow->addWidget(m_quickRefEdit);
+    navRow->addWidget(m_quickRefEdit, 1);
+    navRow->addWidget(m_quickRefGoBtn);
     rootLayout->addWidget(m_navRowWidget);
 
     // ========================================================================
