@@ -5,7 +5,7 @@ PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BUILD_DIR="$PROJECT_DIR/build"
 DIST_DIR="$PROJECT_DIR/dist"
 STAGE_DIR="$BUILD_DIR/packaging_linux"
-APP_VERSION="${APP_VERSION:-1.1.2}"
+APP_VERSION="${APP_VERSION:-1.1.3}"
 
 mkdir -p "$DIST_DIR"
 rm -f "$DIST_DIR"/ai-bible_*_amd64.deb "$DIST_DIR"/AI_Bible-*-x86_64.AppImage
