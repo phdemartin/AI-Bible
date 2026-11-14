@@ -22,8 +22,9 @@ namespace {
 class StartupSplashScreen : public QWidget {
 public:
     explicit StartupSplashScreen(const QPixmap& splashPix)
-        : QWidget(nullptr, Qt::SplashScreen | Qt::FramelessWindowHint | Qt::WindowStaysOnTopHint)
+        : QWidget(nullptr, Qt::SplashScreen | Qt::FramelessWindowHint | Qt::WindowStaysOnTopHint | Qt::X11BypassWindowManagerHint)
     {
+        setWindowTitle(QStringLiteral("AI Bible — Chargement"));
         setAttribute(Qt::WA_TranslucentBackground, false);
         const int targetW = 960;
         const int targetH = 524; // Exact 2816:1536 aspect ratio
