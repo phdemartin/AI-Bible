@@ -967,24 +967,12 @@ LeftScreenWidget::LeftScreenWidget(SwordEngine* engine, QWidget* parent)
     rootLayout->setContentsMargins(6, 6, 6, 6);
     rootLayout->setSpacing(6);
 
-    // Barre supérieure compacte : Livre | Chap. | Verset | ⚙
-    auto* topRow = new QHBoxLayout();
-    topRow->setSpacing(4);
-
-    m_bookCombo = new QComboBox();
-    m_bookCombo->setMaxVisibleItems(28);
-    m_bookCombo->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
-    m_bookCombo->setMinimumContentsLength(6);
-    m_chapterSpin = new QSpinBox();
-    m_chapterSpin->setPrefix("Ch. ");
-    m_chapterSpin->setRange(1, 150);
-    m_verseSpin = new QSpinBox();
-    m_verseSpin->setPrefix("V. ");
-    m_verseSpin->setRange(1, 176);
-
-    connect(m_bookCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, &LeftScreenWidget::onBookComboChanged);
-    connect(m_chapterSpin, QOverload<int>::of(&QSpinBox::valueChanged), this, &LeftScreenWidget::onChapterSpinChanged);
-    connect(m_verseSpin, QOverload<int>::of(&QSpinBox::valueChanged), this, &LeftScreenWidget::onVerseSpinChanged);
+    m_bookCombo = new QComboBox(this);
+    m_bookCombo->hide();
+    m_chapterSpin = new QSpinBox(this);
+    m_chapterSpin->hide();
+    m_verseSpin = new QSpinBox(this);
+    m_verseSpin->hide();
 
     auto* gearBtn = createGearButton(
         SwordEngine::uiTr("⚙ Réglages de la Bibliothèque (taille des lettres, contraste, couleurs)",
@@ -993,14 +981,9 @@ LeftScreenWidget::LeftScreenWidget(SwordEngine* engine, QWidget* parent)
     );
     connect(gearBtn, &QToolButton::clicked, this, &LeftScreenWidget::onOpenGearSettings);
 
-    topRow->addWidget(m_bookCombo, 1);
-    topRow->addWidget(m_chapterSpin);
-    topRow->addWidget(m_verseSpin);
-    topRow->addWidget(gearBtn);
-    rootLayout->addLayout(topRow);
-
     // Onglets légers : Documents | Recherche (dans la langue du système)
     auto* leftTabs = new QTabWidget();
+    leftTabs->setCornerWidget(gearBtn, Qt::TopRightCorner);
 
     // --- ONGLET 1 : ARBRE DES DOCUMENTS ---
     auto* treeTab = new QWidget();
