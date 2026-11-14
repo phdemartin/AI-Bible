@@ -8,6 +8,7 @@
 #include <QGuiApplication>
 #include <QIcon>
 #include <QLinearGradient>
+#include <QLoggingCategory>
 #include <QPainter>
 #include <QPainterPath>
 #include <QPixmap>
@@ -154,6 +155,7 @@ QString findAssetPath(const QStringList& candidates) {
 } // namespace
 
 int main(int argc, char* argv[]) {
+    QLoggingCategory::setFilterRules(QStringLiteral("qt.text.font.db*=false\n"));
     QApplication app(argc, argv);
     app.setApplicationName("BibleStudyStudio");
     app.setApplicationDisplayName("AI Bible — Logos & Lumière");
