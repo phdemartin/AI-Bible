@@ -8,10 +8,41 @@ from vosk import Model, KaldiRecognizer, SetLogLevel
 
 SetLogLevel(-1)
 
-def main():
+def find_model_dir():
     base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    model_dir = os.path.join(base_dir, "models", "vosk-model-small-fr-0.22")
-    if not os.path.exists(model_dir):
+    home_dir = os.path.expanduser("~")
+    candidates = [
+        os.path.join(base_dir, "models", "vosk-model-small-fr-0.22"),
+        os.path.join(home_dir, ".local", "share", "ai-bible", "models", "vosk-model-small-fr-0.22"),
+        "/usr/share/ai-bible/models/vosk-model-small-fr-0.22",
+        os.path.join(home_dir, ".gemini", "antigravity", "scratch", "Bible_Tool", "models", "vosk-model-small-fr-0.22"),
+    ]
+    for cand in candidates:
+        if os.path.exists(cand):
+            return cand
+
+    # Téléchargement automatique au premier usage dans ~/.local/share/ai-bible/models/
+    try:
+        import urllib.request
+        import zipfile
+        target_parent = os.path.join(home_dir, ".local", "share", "ai-bible", "models")
+        os.makedirs(target_parent, exist_ok=True)
+        zip_path = os.path.join(target_parent, "vosk-model-small-fr-0.22.zip")
+        url = "https://alphacephei.com/vosk/models/vosk-model-small-fr-0.22.zip"
+        urllib.request.urlretrieve(url, zip_path)
+        with zipfile.ZipFile(zip_path, "r") as zf:
+            zf.extractall(target_parent)
+        os.remove(zip_path)
+        extracted = os.path.join(target_parent, "vosk-model-small-fr-0.22")
+        if os.path.exists(extracted):
+            return extracted
+    except Exception:
+        pass
+    return None
+
+def main():
+    model_dir = find_model_dir()
+    if not model_dir:
         print("ERROR:Modèle vocal français introuvable.", flush=True)
         sys.exit(1)
 

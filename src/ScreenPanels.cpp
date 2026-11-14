@@ -3574,6 +3574,8 @@ void UniversalPaneWidget::onToggleMicDictation() {
             QString line = QString::fromUtf8(m_dictationProcess->readLine()).trimmed();
             if (line == "READY") {
                 m_geminiStatusLabel->setText("🎙️ Parlez maintenant dans le micro... Vous pouvez cliquer directement sur « 🚀 Envoyer » dès que vous avez fini.");
+            } else if (line.startsWith("ERROR:")) {
+                m_geminiStatusLabel->setText("⚠️ " + line.mid(6).trimmed());
             } else if (line.startsWith("PARTIAL:")) {
                 QString p = line.mid(8).trimmed();
                 if (!p.isEmpty()) {
